@@ -15,6 +15,7 @@ from pytorch_lightning.callbacks import RichProgressBar
 from pytorch_lightning.callbacks.progress.rich_progress import RichProgressBarTheme
 import matplotlib.pyplot as plt
 from matplotlib import colors
+import zuko
 
 
 torch.set_float32_matmul_precision("medium")
@@ -64,6 +65,12 @@ class CVAE(pl.LightningModule):
             if isinstance(m, nn.Linear):
                 torch.nn.init.xavier_uniform_(m.weight)
                 m.bias.data.fill_(0.01)
+        self.prior = zuko.flows.MAF(
+            features=self.latent_dim,
+            context=25*14+3,
+            hidden_features=(512, 512),
+            transforms=4,
+        )
         self.apply(init_weights)
         self.angles = []
         
@@ -92,8 +99,9 @@ class CVAE(pl.LightningModule):
         beta = self.beta_min + 0.5 * (self.beta_max - self.beta_min) * (math.cos(math.pi * self.current_epoch/10))
         recon_loss = torch.mean(F.mse_loss(recon_x, x.flatten(1,2)[:,3:,:], reduction='none'))
         kl_loss = torch.mean(-0.5 * (1 + log_variance - mean.pow(2) - log_variance.exp()))
-        displacement_loss = torch.mean(F.mse_loss(recon_x_disp[:,-1,:] - first_three[:,-1,:], displacement, reduction='none'))
-        loss = recon_loss + beta*kl_loss + .1*displacement_loss
+        displacement_loss = torch.mean((F.mse_loss(recon_x_disp[:,-1,:] - first_three[:,-1,:], displacement, reduction='none')))
+        # displacement_reg = torch.mean((recon_x_disp[:,-1,:] - first_three[:,-1,:]).pow(2))
+        loss = recon_loss + beta*kl_loss + .1*displacement_loss #- .001 * displacement_reg
         return loss, recon_loss, kl_loss, displacement_loss
     
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx):
@@ -107,9 +115,18 @@ class CVAE(pl.LightningModule):
         
         z = self.sample(mean, log_variance)
         recon_inputs = self.decode(z, labels, displacement, first_three, train_data=inputs_cart[:,1:,:,:].flatten(1,2))
-        recon_inputs_disp = self.decode(z, labels, displacement, first_three)
+        
+        aa, ss = labels[:,1:,0].long(), labels[:,1:,1].long()
+        prior = self.prior(torch.cat([F.one_hot(aa.type(torch.LongTensor).cuda(), num_classes=21).flatten(1), F.one_hot(ss.type(torch.LongTensor).cuda(), num_classes=4).flatten(1), displacement.cuda()], dim=-1))
+        prior_loss = -torch.mean(prior.log_prob(z))
+        z_1 = prior.sample((1,)).squeeze(0)
+        
+        recon_inputs_disp = self.decode(z_1, labels, displacement, first_three)
     
         loss, recon_loss, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs_disp, inputs_cart, mean, log_variance, displacement, first_three, weights)
+        loss += 0.01 * prior_loss
+        
+        self.log("train_prior_loss", prior_loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
         
         self.log("train_loss", loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
         self.log("train_recon_loss", recon_loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
@@ -148,7 +165,10 @@ class CVAE(pl.LightningModule):
         
         
     def generate(self, n, first_three, labels, displacement, return_angles=False):
-        z = torch.randn((n, self.latent_dim))
+        # z = torch.randn((n, self.latent_dim))
+        aa, ss = labels[:,1:,0].long(), labels[:,1:,1].long()
+        prior = self.prior(torch.cat([F.one_hot(aa.type(torch.LongTensor).cuda(), num_classes=21).flatten(1), F.one_hot(ss.type(torch.LongTensor).cuda(), num_classes=4).flatten(1), displacement.cuda()], dim=-1))
+        z = prior.sample((1,)).squeeze(0)
         return self.decode(z, labels, displacement, first_three, return_angles=return_angles)
     
     
