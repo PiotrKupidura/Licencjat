@@ -15,6 +15,7 @@ from pytorch_lightning.callbacks import RichProgressBar
 from pytorch_lightning.callbacks.progress.rich_progress import RichProgressBarTheme
 import matplotlib.pyplot as plt
 from matplotlib import colors
+from umap import UMAP
 
 
 torch.set_float32_matmul_precision("medium")
@@ -53,10 +54,10 @@ class CVAE(pl.LightningModule):
         self.decoder = nn.Sequential(
             nn.Linear(self.latent_dim+25*14+3,512),
             nn.ReLU(),
-            nn.Linear(512, 8192),
-            nn.ReLU(),
-            nn.Linear(8192, 512),
-            nn.ReLU(),
+            # nn.Linear(512, 8192),
+            # nn.ReLU(),
+            # nn.Linear(8192, 512),
+            # nn.ReLU(),
             nn.Linear(512, 84),
             # nn.Tanh()
         )
@@ -66,6 +67,10 @@ class CVAE(pl.LightningModule):
                 m.bias.data.fill_(0.01)
         self.apply(init_weights)
         self.angles = []
+        self.latent = []
+        self.alpha = []
+        self.theta = []
+        self.norm = []
         
     
     def encode(self, x, labels, displacement):
@@ -93,7 +98,7 @@ class CVAE(pl.LightningModule):
         recon_loss = torch.mean(F.mse_loss(recon_x, x.flatten(1,2)[:,3:,:], reduction='none'))
         kl_loss = torch.mean(-0.5 * (1 + log_variance - mean.pow(2) - log_variance.exp()))
         displacement_loss = torch.mean(F.mse_loss(recon_x_disp[:,-1,:] - first_three[:,-1,:], displacement, reduction='none'))
-        loss = recon_loss + beta*kl_loss + .1*displacement_loss
+        loss = recon_loss + beta*kl_loss + .0*displacement_loss
         return loss, recon_loss, kl_loss, displacement_loss
     
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx):
@@ -127,7 +132,11 @@ class CVAE(pl.LightningModule):
         
         mean, log_variance, first_three = self.encode(inputs_cart, labels, displacement)
         z = self.sample(mean, log_variance)
-        recon_inputs = self.decode(z, labels, displacement, first_three)
+        recon_inputs, angles = self.decode(z, labels, displacement, first_three, return_angles=True)
+        self.latent.append(z)
+        self.alpha.append(torch.arccos(displacement[:,-1]/torch.linalg.vector_norm(displacement, dim=1)))
+        self.theta.append(torch.sign(displacement[:,1]) * torch.acos(displacement[:,0]/torch.sqrt(displacement[:,0]**2 + displacement[:,1]**2)))
+        self.norm.append(torch.linalg.vector_norm(displacement, dim=1))
         
         loss, recon_loss, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs, inputs_cart, mean, log_variance, displacement, first_three, weights)
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
@@ -185,6 +194,30 @@ class CVAE(pl.LightningModule):
         # plt.close(fig)
         
         self.angles = []
+        
+        latent = torch.cat(self.latent)
+        latent = UMAP(n_components=2).fit_transform(latent.numpy(force=True))
+        
+        fig, ax = plt.subplots()
+        a = ax.scatter(latent[:,0], latent[:,1], c=torch.cat(self.alpha).numpy(force=True))
+        fig.colorbar(a)
+        fig.savefig("plots/latent_alpha.png")
+        plt.close(fig)
+        self.alpha = []
+        
+        fig, ax = plt.subplots()
+        a = ax.scatter(latent[:,0], latent[:,1], c=torch.cat(self.theta).numpy(force=True))
+        fig.colorbar(a)
+        fig.savefig("plots/latent_theta.png")
+        plt.close(fig)
+        self.theta = []
+        
+        fig, ax = plt.subplots()
+        a = ax.scatter(latent[:,0], latent[:,1], c=torch.cat(self.norm).numpy(force=True))
+        fig.colorbar(a)
+        fig.savefig("plots/latent_norm.png")
+        plt.close(fig)
+        self.norm = []
     
     
     def configure_optimizers(self):
