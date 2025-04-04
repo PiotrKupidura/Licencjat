@@ -48,7 +48,7 @@ if __name__ == "__main__":
     else:
         ss = args.ss
 
-    displacement = input_structure.local_displacement(start-1, end)
+    displacement = input_structure.local_displacement(end,start-1)
 
     print(displacement)
 
@@ -91,8 +91,8 @@ if __name__ == "__main__":
         new_structures.append(structure)
 
 
-    new_structures.sort(key=lambda structure: torch.nn.functional.mse_loss(torch.tensor(structure.local_displacement(start-1,end)), displacement_label, reduction="mean").item())
-    print([torch.linalg.vector_norm(torch.tensor(structure.local_displacement(start,end)) - displacement_label[0]) for structure in new_structures[:10]])
+    new_structures.sort(key=lambda structure: torch.nn.functional.mse_loss(torch.tensor(structure.local_displacement(end,start-1)), displacement_label, reduction="mean").item())
+    print([torch.linalg.vector_norm(torch.tensor(structure.local_displacement(end,start-1)) - displacement_label[0]) for structure in new_structures[:10]])
     disp = torch.linalg.vector_norm(fragments[:,-1,:].cpu()-prev_three[:,-1,:]-displacement_label, dim=1).numpy(force=True)
     plt.hist(disp, bins=100)
     plt.savefig("plots/histogram.png")

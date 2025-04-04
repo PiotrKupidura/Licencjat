@@ -89,15 +89,26 @@ class InputAttention(nn.Module):
 class FiLMLayer(nn.Module):
     def __init__(self, input_dim, condition_dim, output_dim):
         super().__init__()
-        self.gamma = nn.Linear(condition_dim, input_dim)
-        self.beta = nn.Linear(condition_dim, input_dim)
+        self.gamma = nn.Sequential(
+            nn.Linear(condition_dim, output_dim),
+            nn.ReLU(),
+            nn.Linear(output_dim, output_dim)
+        )
+        self.beta = nn.Sequential(
+            nn.Linear(condition_dim, output_dim),
+            nn.ReLU(),
+            nn.Linear(output_dim, output_dim)
+        )
         self.linear = nn.Linear(input_dim, output_dim)
+        self.bn = nn.BatchNorm1d(output_dim)
 
     def forward(self, x, condition):
+        x = self.linear(x)
+        x = self.bn(x)
         gamma = self.gamma(condition)
         beta = self.beta(condition)
         x = gamma * x + beta
-        return self.linear(x)
+        return x
 
 
 class CVAE(pl.LightningModule):
@@ -112,22 +123,22 @@ class CVAE(pl.LightningModule):
         self.c2d = CartesianToDihedral()
         self.d2c = DihedralToCartesian()
         self.encoder = nn.Sequential(
-            nn.Linear(self.input_dim, 512),
+            FiLMLayer(self.input_dim, 3, 512),
             nn.ReLU(),
-            # nn.Linear(512, 2048),
-            # nn.ReLU(),
-            # nn.Linear(2048, 512),
+            FiLMLayer(512, 3, 512),
+            nn.ReLU(),
+            # nn.Linear(8192, 512),
             # nn.ReLU(),
             nn.Linear(512, 2*self.latent_dim),
         )
         self.decoder = nn.Sequential(
-            FiLMLayer(self.latent_dim, 2, 512),
+            FiLMLayer(self.latent_dim, 3, 512),
             nn.ReLU(),
-            FiLMLayer(512, 2, 512),
+            FiLMLayer(512, 3, 512),
             nn.ReLU(),
             # nn.Linear(8192, 512),
             # nn.ReLU(),
-            FiLMLayer(512, 2, self.input_dim),
+            nn.Linear(512,self.input_dim),
             nn.Tanh()
         )
         def init_weights(m):
@@ -141,10 +152,16 @@ class CVAE(pl.LightningModule):
 
     def encode(self, x, labels, displacement):
         aa, ss = labels[:,1:,0].long(), labels[:,1:,1].long()
+        # displacement_1 = torch.stack([torch.tan(displacement[:,0]/(displacement[:,1]+1e-6)),
+            # torch.arccos(displacement[:,1]/(1e-6+torch.sqrt(1e-6+displacement[:,0]**2 + displacement[:,1]**2) + displacement[:,2]**2))], dim=-1)
         # x, _ = self.input_attention(x, displacement)
         x, first_three = self.c2d(x)
         # x = torch.cat([x, F.one_hot(aa.type(torch.LongTensor).to(self.device), num_classes=21).flatten(1), F.one_hot(ss.type(torch.LongTensor).to(self.device), num_classes=4).flatten(1), displacement], dim=-1)
-        x = self.encoder(x)
+        for layer in self.encoder:
+            if isinstance(layer, FiLMLayer):
+                x = layer(x, displacement)
+            else:
+                x = layer(x)
         mean, log_variance = torch.chunk(x, 2, dim=-1)
         return mean, log_variance, first_three
 
@@ -162,7 +179,7 @@ class CVAE(pl.LightningModule):
         # x = self.decoder(x) #* torch.full((x.shape[0],42), math.pi, device=self.device)
         for layer in self.decoder:
             if isinstance(layer, FiLMLayer):
-                x = layer(x, displacement_1)
+                x = layer(x, displacement)
             else:
                 x = layer(x)
         x = x * torch.full((x.shape[0],42), math.pi, device=self.device)
@@ -184,7 +201,7 @@ class CVAE(pl.LightningModule):
         displacement_loss = torch.mean(F.mse_loss(recon_x_disp[:,-1,:] - first_three[:,-1,:], displacement, reduction='none'))
         # displacement_loss = self.displacement_loss(recon_x_disp[:,-1,:] - first_three[:,-1,:], displacement)
         # displacement_reg = torch.mean(torch.square(displacement))
-        loss = 1 * recon_loss_1 + .0 * recon_loss_2 + beta*kl_loss + .001*displacement_loss #- .1*displacement_reg
+        loss = 1 * recon_loss_1 + .0 * recon_loss_2 + beta*kl_loss + .1*displacement_loss #- .1*displacement_reg
         return loss, recon_loss_1, recon_loss_2, kl_loss, displacement_loss
 
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx):
@@ -197,7 +214,7 @@ class CVAE(pl.LightningModule):
         mean, log_variance, first_three = self.encode(inputs_cart, labels, displacement)
 
         z = self.sample(mean, log_variance)
-        z = z - (torch.einsum('ij,ij->i', z, displacement)/torch.linalg.vector_norm(displacement+1e-6, dim=-1)).unsqueeze(1) * displacement
+        # z = z - (torch.einsum('ij,ij->i', z, displacement)/torch.linalg.vector_norm(displacement+1e-6, dim=-1)).unsqueeze(1) * displacement
         recon_inputs = self.decode(z, labels, displacement, first_three, train_data=inputs_cart[:,1:,:,:].flatten(1,2))
         recon_inputs_disp = self.decode(z, labels, displacement, first_three)
 
@@ -221,7 +238,7 @@ class CVAE(pl.LightningModule):
 
         mean, log_variance, first_three = self.encode(inputs_cart, labels, displacement)
         z = self.sample(mean, log_variance)
-        z = z - (torch.einsum('ij,ij->i', z, displacement)/torch.linalg.vector_norm(displacement+1e-6, dim=-1)).unsqueeze(1) * displacement
+        # z = z - (torch.einsum('ij,ij->i', z, displacement)/torch.linalg.vector_norm(displacement+1e-6, dim=-1)).unsqueeze(1) * displacement
         recon_inputs = self.decode(z, labels, displacement, first_three)
 
         loss, recon_loss, _, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs, inputs_cart, mean, log_variance, displacement, first_three, weights)
@@ -248,7 +265,7 @@ class CVAE(pl.LightningModule):
 
     def generate(self, n, first_three, labels, displacement, return_angles=False):
         z = torch.randn((n, self.latent_dim))
-        z = z - (torch.einsum('ij,ij->i', z, displacement)/torch.linalg.vector_norm(displacement+1e-6, dim=-1)).unsqueeze(1) * displacement
+        # z = z - (torch.einsum('ij,ij->i', z, displacement)/torch.linalg.vector_norm(displacement+1e-6, dim=-1)).unsqueeze(1) * displacement
         return self.decode(z, labels, displacement, first_three, return_angles=return_angles)
 
 
