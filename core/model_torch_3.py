@@ -111,6 +111,21 @@ class FiLMLayer(nn.Module):
         return x
 
 
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        return x + self.pe[:x.size(0), :]
+
+
 class CVAE(pl.LightningModule):
     def __init__(self, n, latent_dim, beta_min, beta_max, lr):
         super().__init__()
@@ -122,25 +137,44 @@ class CVAE(pl.LightningModule):
         self.latent_dim = latent_dim
         self.c2d = CartesianToDihedral()
         self.d2c = DihedralToCartesian()
-        self.encoder = nn.Sequential(
-            FiLMLayer(self.input_dim, 3, 512),
-            nn.ReLU(),
-            FiLMLayer(512, 3, 512),
-            nn.ReLU(),
-            # nn.Linear(8192, 512),
-            # nn.ReLU(),
-            nn.Linear(512, 2*self.latent_dim),
+        self.positional_encoding = PositionalEncoding(d_model=32)
+
+        self.encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=32, nhead=8),
+            num_layers=2
         )
-        self.decoder = nn.Sequential(
-            FiLMLayer(self.latent_dim, 3, 512),
-            nn.ReLU(),
-            FiLMLayer(512, 3, 512),
-            nn.ReLU(),
-            # nn.Linear(8192, 512),
-            # nn.ReLU(),
-            nn.Linear(512,self.input_dim),
-            nn.Tanh()
+
+        self.decoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=32, nhead=8),
+            num_layers=2
         )
+
+        self.input_mu = nn.Linear(3, 32)
+        self.input_sigma = nn.Linear(3, 32)
+        self.output_mu = nn.Linear(32, self.latent_dim)
+        self.output_sigma = nn.Linear(32, self.latent_dim)
+        self.decoder_projection = nn.Linear(self.latent_dim, 32)
+        self.input_projection = nn.Linear(3,32)
+        self.output_projection = nn.Linear(32,3)
+        # self.encoder = nn.Sequential(
+        #     FiLMLayer(self.input_dim, 3, 512),
+        #     nn.ReLU(),
+        #     FiLMLayer(512, 3, 512),
+        #     nn.ReLU(),
+        #     # nn.Linear(8192, 512),
+        #     # nn.ReLU(),
+        #     nn.Linear(512, 2*self.latent_dim),
+        # )
+        # self.decoder = nn.Sequential(
+        #     FiLMLayer(self.latent_dim, 3, 512),
+        #     nn.ReLU(),
+        #     FiLMLayer(512, 3, 512),
+        #     nn.ReLU(),
+        #     # nn.Linear(8192, 512),
+        #     # nn.ReLU(),
+        #     nn.Linear(512,self.input_dim),
+        #     nn.Tanh()
+        # )
         def init_weights(m):
             if isinstance(m, nn.Linear):
                 torch.nn.init.xavier_uniform_(m.weight)
@@ -157,12 +191,20 @@ class CVAE(pl.LightningModule):
         # x, _ = self.input_attention(x, displacement)
         x, first_three = self.c2d(x)
         # x = torch.cat([x, F.one_hot(aa.type(torch.LongTensor).to(self.device), num_classes=21).flatten(1), F.one_hot(ss.type(torch.LongTensor).to(self.device), num_classes=4).flatten(1), displacement], dim=-1)
-        for layer in self.encoder:
-            if isinstance(layer, FiLMLayer):
-                x = layer(x, displacement)
-            else:
-                x = layer(x)
-        mean, log_variance = torch.chunk(x, 2, dim=-1)
+        # for layer in self.encoder:
+        #     if isinstance(layer, FiLMLayer):
+        #         x = layer(x, displacement)
+        #     else:
+        #         x = layer(x)
+        x = x.unflatten(1,(14,3))
+        x = self.input_projection(x)
+        input_mu, input_sigma = self.input_mu(displacement).unsqueeze(1), self.input_sigma(displacement).unsqueeze(1)
+        x = torch.cat([input_mu, input_sigma, x], dim=1)
+        x = self.positional_encoding(x)
+        x = self.encoder(x)
+        # mean, log_variance = torch.chunk(x, 2, dim=-1)
+        mean = self.output_mu(x[:,0,:])
+        log_variance = self.output_sigma(x[:,1,:])
         return mean, log_variance, first_three
 
     def sample(self, mean, log_variance):
@@ -177,12 +219,18 @@ class CVAE(pl.LightningModule):
         # x, _ = self.input_attention(x, displacement_1)
         # x = torch.cat([x.to(self.device), F.one_hot(aa.type(torch.LongTensor).to(self.device), num_classes=21).flatten(1), F.one_hot(ss.type(torch.LongTensor).to(self.device), num_classes=4).flatten(1), displacement.to(self.device)], dim=-1)
         # x = self.decoder(x) #* torch.full((x.shape[0],42), math.pi, device=self.device)
-        for layer in self.decoder:
-            if isinstance(layer, FiLMLayer):
-                x = layer(x, displacement)
-            else:
-                x = layer(x)
-        x = x * torch.full((x.shape[0],42), math.pi, device=self.device)
+        # for layer in self.decoder:
+        #     if isinstance(layer, FiLMLayer):
+        #         x = layer(x, displacement)
+        #     else:
+        #         x = layer(x)
+        # x = x * torch.full((x.shape[0],42), math.pi, device=self.device)
+        x = self.decoder_projection(x)
+        x = x.unsqueeze(1).expand(-1,14,-1)
+        x = self.positional_encoding(x)
+        x = self.decoder(x)
+        x = self.output_projection(x)
+        x = x.flatten(1,2)
         x = self.d2c((x, first_three),return_angles=return_angles, train_data=train_data)
         return x
 
