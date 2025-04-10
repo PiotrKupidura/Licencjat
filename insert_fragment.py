@@ -72,7 +72,7 @@ if __name__ == "__main__":
 
     displacement = torch.tensor(displacement).float().unsqueeze(0).expand(population,-1)
     prev_three = torch.stack([torch.tensor(c_1),torch.tensor(c_2),torch.tensor(c_3)]).unsqueeze(0).expand(population,-1,-1).float()
-    fragments = t.model.generate(population, prev_three.to(device), labels.to(device), displacement)
+    fragments = t.model.generate(population, prev_three.to(device), labels.to(device), displacement.to(device))
 
     new_structures = [] # all structures obtained from generated results
     for fragment in fragments:

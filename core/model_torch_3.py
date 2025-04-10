@@ -7,6 +7,7 @@ from torch import nn
 from torch.nn import functional as F
 
 import pytorch_lightning as pl
+from transformers import BertConfig, BertModel
 
 from core.layers_torch import CartesianToDihedral, DihedralToCartesian
 from core.loader import FragmentDataModule
@@ -16,11 +17,9 @@ from pytorch_lightning.callbacks.progress.rich_progress import RichProgressBarTh
 import matplotlib.pyplot as plt
 from matplotlib import colors
 
-
 torch.set_float32_matmul_precision("medium")
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
-
 
 class CustomProgressBar(RichProgressBar):
     def get_metrics(self, *args, **kwargs):
@@ -28,7 +27,6 @@ class CustomProgressBar(RichProgressBar):
         items = super().get_metrics(*args, **kwargs)
         items.pop("v_num", None)
         return items
-
 
 class Attention(nn.Module):
     def __init__(self, query_dim, key_dim, value_dim, attention_dim):
@@ -47,7 +45,6 @@ class Attention(nn.Module):
         attended_value = torch.matmul(attention_weights, V)
         return attended_value, attention_weights
 
-
 class OrientationEmbedding(nn.Module):
     def __init__(self, orientation_dim, embedding_dim):
         super().__init__()
@@ -55,7 +52,6 @@ class OrientationEmbedding(nn.Module):
 
     def forward(self, orientation):
         return self.embedding(orientation)
-
 
 class InputAttention(nn.Module):
     def __init__(self, input_dim, mlp_hidden_dim, orientation_dim, embedding_dim, attention_dim, output_dim):
@@ -76,7 +72,7 @@ class InputAttention(nn.Module):
 
         embedded_orientation = self.orientation_embedding(orientation).unsqueeze(1) # (batch_size, 1, embedding_dim)
 
-        mlp_output = self.mlp(input_sequence.unsqueeze(1)) # (batch_size, seq_len, mlp_hidden_dim)
+        mlp_output = self.mlp(input_sequence) # (batch_size, seq_len, mlp_hidden_dim)
 
         attended_value, attention_weights = self.attention(mlp_output, embedded_orientation, embedded_orientation) # (batch_size, seq_len, embedding_dim)
 
@@ -84,7 +80,6 @@ class InputAttention(nn.Module):
 
         output = self.output_layer(concatenated_input).squeeze(1) # (batch_size, seq_len, output_dim)
         return output, attention_weights
-
 
 class FiLMLayer(nn.Module):
     def __init__(self, input_dim, condition_dim, output_dim):
@@ -110,7 +105,6 @@ class FiLMLayer(nn.Module):
         x = gamma * x + beta
         return x
 
-
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super(PositionalEncoding, self).__init__()
@@ -119,12 +113,11 @@ class PositionalEncoding(nn.Module):
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
+        pe = pe.unsqueeze(0)#.transpose(0, 1)
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        return x + self.pe[:x.size(0), :]
-
+        return x + self.pe[:, :x.size(1)]
 
 class CVAE(pl.LightningModule):
     def __init__(self, n, latent_dim, beta_min, beta_max, lr):
@@ -137,72 +130,54 @@ class CVAE(pl.LightningModule):
         self.latent_dim = latent_dim
         self.c2d = CartesianToDihedral()
         self.d2c = DihedralToCartesian()
-        self.positional_encoding = PositionalEncoding(d_model=32)
+        self.d_model = 32
+        self.positional_encoding = PositionalEncoding(d_model=self.d_model)
 
-        self.encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=32, nhead=8),
-            num_layers=2
+        # Initialize BERT model with random weights
+        config = BertConfig(hidden_size=self.d_model, num_hidden_layers=3, num_attention_heads=4, intermediate_size=1024,
+                            hidden_dropout_prob=0.0, attention_probs_dropout_prob=0.0)
+        self.encoder = BertModel(config)
+        self.decoder = BertModel(config)
+
+        self.input_mu = nn.Linear(3, self.d_model)
+        self.input_sigma = nn.Linear(3, self.d_model)
+        self.output_mu = nn.Linear(self.d_model, self.latent_dim)
+        self.output_sigma = nn.Linear(self.d_model, self.latent_dim)
+        self.decoder_projection = nn.Linear(self.latent_dim, self.d_model)
+        self.input_projection = nn.Linear(3, self.d_model)
+        self.output_projection = nn.Linear(self.d_model, 3)
+        self.emb1 = nn.Embedding(9, self.d_model)
+        self.emb2 = nn.Embedding(9, self.d_model)
+        self.aa_emb = nn.Embedding(21, self.d_model)
+        self.ss_emb = nn.Embedding(4, self.d_model)
+
+        # Initialize InputAttention module
+        self.input_attention = InputAttention(
+            input_dim=self.d_model,
+            mlp_hidden_dim=64,
+            orientation_dim=self.d_model,
+            embedding_dim=self.d_model,
+            attention_dim=self.d_model,
+            output_dim=self.d_model
         )
 
-        self.decoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=32, nhead=8),
-            num_layers=2
-        )
-
-        self.input_mu = nn.Linear(3, 32)
-        self.input_sigma = nn.Linear(3, 32)
-        self.output_mu = nn.Linear(32, self.latent_dim)
-        self.output_sigma = nn.Linear(32, self.latent_dim)
-        self.decoder_projection = nn.Linear(self.latent_dim, 32)
-        self.input_projection = nn.Linear(3,32)
-        self.output_projection = nn.Linear(32,3)
-        # self.encoder = nn.Sequential(
-        #     FiLMLayer(self.input_dim, 3, 512),
-        #     nn.ReLU(),
-        #     FiLMLayer(512, 3, 512),
-        #     nn.ReLU(),
-        #     # nn.Linear(8192, 512),
-        #     # nn.ReLU(),
-        #     nn.Linear(512, 2*self.latent_dim),
-        # )
-        # self.decoder = nn.Sequential(
-        #     FiLMLayer(self.latent_dim, 3, 512),
-        #     nn.ReLU(),
-        #     FiLMLayer(512, 3, 512),
-        #     nn.ReLU(),
-        #     # nn.Linear(8192, 512),
-        #     # nn.ReLU(),
-        #     nn.Linear(512,self.input_dim),
-        #     nn.Tanh()
-        # )
         def init_weights(m):
             if isinstance(m, nn.Linear):
                 torch.nn.init.xavier_uniform_(m.weight)
                 m.bias.data.fill_(0.01)
         self.apply(init_weights)
         self.angles = []
-        # self.input_attention = InputAttention(self.latent_dim, 32, 2, 32, 32, self.latent_dim)
-
 
     def encode(self, x, labels, displacement):
         aa, ss = labels[:,1:,0].long(), labels[:,1:,1].long()
-        # displacement_1 = torch.stack([torch.tan(displacement[:,0]/(displacement[:,1]+1e-6)),
-            # torch.arccos(displacement[:,1]/(1e-6+torch.sqrt(1e-6+displacement[:,0]**2 + displacement[:,1]**2) + displacement[:,2]**2))], dim=-1)
-        # x, _ = self.input_attention(x, displacement)
         x, first_three = self.c2d(x)
-        # x = torch.cat([x, F.one_hot(aa.type(torch.LongTensor).to(self.device), num_classes=21).flatten(1), F.one_hot(ss.type(torch.LongTensor).to(self.device), num_classes=4).flatten(1), displacement], dim=-1)
-        # for layer in self.encoder:
-        #     if isinstance(layer, FiLMLayer):
-        #         x = layer(x, displacement)
-        #     else:
-        #         x = layer(x)
         x = x.unflatten(1,(14,3))
         x = self.input_projection(x)
-        input_mu, input_sigma = self.input_mu(displacement).unsqueeze(1), self.input_sigma(displacement).unsqueeze(1)
+        # input_mu, input_sigma = self.input_mu(displacement).unsqueeze(1), self.input_sigma(displacement).unsqueeze(1)
+        input_mu, input_sigma = torch.ones(x.shape[0], 1, self.d_model).to(x.device), torch.ones(x.shape[0], 1, self.d_model).to(x.device)
         x = torch.cat([input_mu, input_sigma, x], dim=1)
         x = self.positional_encoding(x)
-        x = self.encoder(x)
-        # mean, log_variance = torch.chunk(x, 2, dim=-1)
+        x = self.encoder(inputs_embeds=x).last_hidden_state
         mean = self.output_mu(x[:,0,:])
         log_variance = self.output_sigma(x[:,1,:])
         return mean, log_variance, first_three
@@ -214,23 +189,21 @@ class CVAE(pl.LightningModule):
 
     def decode(self, x, labels, displacement, first_three, return_angles=False, train_data=None):
         aa, ss = labels[:,1:,0].long(), labels[:,1:,1].long()
-        displacement_1 = torch.stack([torch.tan(displacement[:,0]/(displacement[:,1]+1e-6)),
-            torch.arccos(displacement[:,1]/(1e-6+torch.sqrt(1e-6+displacement[:,0]**2 + displacement[:,1]**2) + displacement[:,2]**2))], dim=-1)
-        # x, _ = self.input_attention(x, displacement_1)
-        # x = torch.cat([x.to(self.device), F.one_hot(aa.type(torch.LongTensor).to(self.device), num_classes=21).flatten(1), F.one_hot(ss.type(torch.LongTensor).to(self.device), num_classes=4).flatten(1), displacement.to(self.device)], dim=-1)
-        # x = self.decoder(x) #* torch.full((x.shape[0],42), math.pi, device=self.device)
-        # for layer in self.decoder:
-        #     if isinstance(layer, FiLMLayer):
-        #         x = layer(x, displacement)
-        #     else:
-        #         x = layer(x)
-        # x = x * torch.full((x.shape[0],42), math.pi, device=self.device)
+        displacement_1 = torch.stack([torch.arccos(displacement[:,1]/(1e-6+torch.sqrt(1e-6+displacement[:,0]**2 + displacement[:,1]**2) + displacement[:,2]**2)),
+        torch.sign(displacement[:,1]) * torch.arccos(displacement[:,0]/(1e-6+torch.sqrt(1e-6+displacement[:,0]**2 + displacement[:,1]**2)))], dim=-1)
+        boundaries = torch.tensor([-2*math.pi, -3*math.pi/2, -math.pi, -math.pi/2, 0, math.pi/2, math.pi, 3*math.pi/2, 2*math.pi], device=displacement.device)
+        displacement_1 = torch.bucketize(displacement_1, boundaries)
         x = self.decoder_projection(x)
         x = x.unsqueeze(1).expand(-1,14,-1)
-        x = self.positional_encoding(x)
-        x = self.decoder(x)
+
+        # Apply InputAttention module
+        tgt, _ = self.input_attention(x, self.emb1(displacement_1[:,0]) + self.emb2(displacement_1[:,1]))
+        tgt = self.positional_encoding(tgt) + self.aa_emb(aa) + self.ss_emb(ss)
+
+        x = self.decoder(inputs_embeds=tgt, encoder_hidden_states= self.emb1(displacement_1[:,0]).unsqueeze(1) + self.emb2(displacement_1[:,1]).unsqueeze(1)).last_hidden_state
         x = self.output_projection(x)
         x = x.flatten(1,2)
+        x = torch.tanh(x) * torch.full((x.shape[0],42), math.pi, device=self.device)
         x = self.d2c((x, first_three),return_angles=return_angles, train_data=train_data)
         return x
 
@@ -247,9 +220,9 @@ class CVAE(pl.LightningModule):
         recon_loss_2 = torch.mean(F.mse_loss(recon_x_disp, x.flatten(1,2)[:,3:,:], reduction='none'))
         kl_loss = torch.mean(-0.5 * (1 + log_variance - mean.pow(2) - log_variance.exp()))
         displacement_loss = torch.mean(F.mse_loss(recon_x_disp[:,-1,:] - first_three[:,-1,:], displacement, reduction='none'))
-        # displacement_loss = self.displacement_loss(recon_x_disp[:,-1,:] - first_three[:,-1,:], displacement)
-        # displacement_reg = torch.mean(torch.square(displacement))
-        loss = 1 * recon_loss_1 + .0 * recon_loss_2 + beta*kl_loss + .1*displacement_loss #- .1*displacement_reg
+        # recon_weight = self.current_epoch % 2 == 0
+        recon_weight = 0
+        loss = recon_weight * 1 * recon_loss_1 + (1 - recon_weight) * .1 * recon_loss_2 + beta*kl_loss + 1e-2*displacement_loss
         return loss, recon_loss_1, recon_loss_2, kl_loss, displacement_loss
 
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx):
@@ -262,11 +235,16 @@ class CVAE(pl.LightningModule):
         mean, log_variance, first_three = self.encode(inputs_cart, labels, displacement)
 
         z = self.sample(mean, log_variance)
-        # z = z - (torch.einsum('ij,ij->i', z, displacement)/torch.linalg.vector_norm(displacement+1e-6, dim=-1)).unsqueeze(1) * displacement
         recon_inputs = self.decode(z, labels, displacement, first_three, train_data=inputs_cart[:,1:,:,:].flatten(1,2))
         recon_inputs_disp = self.decode(z, labels, displacement, first_three)
 
         loss, recon_loss_1, recon_loss_2, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs_disp, inputs_cart, mean, log_variance, displacement, first_three, weights)
+
+        z_1 = torch.randn_like(z)
+        x = self.decode(z_1, labels, displacement, first_three)
+        d_loss = F.mse_loss(x[:,-1,:] - first_three[:,-1,:], displacement)
+        loss += 0.01 * d_loss
+        self.log("d_loss", d_loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
 
         self.log("train_loss", loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
         self.log("train_recon_loss_1", recon_loss_1, on_step=True, on_epoch=False, prog_bar=True, logger=True)
@@ -286,7 +264,6 @@ class CVAE(pl.LightningModule):
 
         mean, log_variance, first_three = self.encode(inputs_cart, labels, displacement)
         z = self.sample(mean, log_variance)
-        # z = z - (torch.einsum('ij,ij->i', z, displacement)/torch.linalg.vector_norm(displacement+1e-6, dim=-1)).unsqueeze(1) * displacement
         recon_inputs = self.decode(z, labels, displacement, first_three)
 
         loss, recon_loss, _, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs, inputs_cart, mean, log_variance, displacement, first_three, weights)
@@ -296,9 +273,6 @@ class CVAE(pl.LightningModule):
         self.log("val_displacement", displacement_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("val_displacement_1", torch.mean(F.mse_loss(recon_inputs[:,-1,:] - first_three[:,-1,:], displacement, reduction='none')), on_step=True, on_epoch=False, prog_bar=True, logger=True)
 
-
-        # benchmark generation
-
         recon_inputs, angles = self.generate(inputs_cart.shape[0], first_three, labels, displacement, return_angles=True)
         loss, recon_loss, _, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs, inputs_cart, mean, log_variance, displacement, first_three, weights)
         below_1 = torch.mean((displacement_loss < 1.0).float())
@@ -307,29 +281,17 @@ class CVAE(pl.LightningModule):
         self.log("val_below_1_generation", below_1, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("generation_displacement_1", torch.mean(F.mse_loss(recon_inputs[:,-1,:] - first_three[:,-1,:], displacement, reduction='none')), on_step=True, on_epoch=False, prog_bar=True, logger=True)
 
-
         self.angles.append(angles)
 
-
     def generate(self, n, first_three, labels, displacement, return_angles=False):
-        z = torch.randn((n, self.latent_dim))
-        # z = z - (torch.einsum('ij,ij->i', z, displacement)/torch.linalg.vector_norm(displacement+1e-6, dim=-1)).unsqueeze(1) * displacement
+        z = torch.randn((n, self.latent_dim), device=displacement.device)
         return self.decode(z, labels, displacement, first_three, return_angles=return_angles)
-
 
     def on_validation_end(self):
         if len(self.angles) == 0:
             return
         angles = torch.cat(self.angles)
-
-        # fig, ax = plt.subplots()
-        # ax.hist2d(angles[:,0].cpu().detach().numpy(), angles[:,1].cpu().detach().numpy(), bins=[300,300], range=[[-math.pi, math.pi], [-math.pi, math.pi]], cmap="Blues", norm=colors.LogNorm())
-        # ax.set_xlabel("psi")
-        # ax.set_ylabel("omega")
-        # ax.set_xlim(-math.pi, math.pi)
-        # ax.set_ylim(-math.pi, math.pi)
-        # fig.savefig(f'plots/plot_psi_omega_{self.current_epoch}.png')
-        # plt.close(fig)
+        print(angles)
 
         fig, ax = plt.subplots()
         ax.hist2d(angles[:,2].cpu().detach().numpy(), angles[:,0].cpu().detach().numpy(), bins=[300,300], range=[[-math.pi, math.pi], [-math.pi, math.pi]], cmap="Blues", norm=colors.LogNorm())
@@ -340,25 +302,14 @@ class CVAE(pl.LightningModule):
         fig.savefig(f'plots/plot_phi_psi_{self.current_epoch}.png')
         plt.close(fig)
 
-        # fig, ax = plt.subplots()
-        # ax.hist2d(angles[:,1].cpu().detach().numpy(), angles[:,2].cpu().detach().numpy(), bins=[300,300], range=[[-math.pi, math.pi], [-math.pi, math.pi]], cmap="Blues", norm=colors.LogNorm())
-        # ax.set_xlabel("omega")
-        # ax.set_ylabel("phi")
-        # ax.set_xlim(-math.pi, math.pi)
-        # ax.set_ylim(-math.pi, math.pi)
-        # fig.savefig(f'plots/plot_omega_phi_{self.current_epoch}.png')
-        # plt.close(fig)
-
         self.angles = []
 
-
     def configure_optimizers(self):
-        return torch.optim.Adam([{'params': self.encoder.parameters()}, {'params': self.decoder.parameters()},], lr=self.lr)
+        return torch.optim.Adam(self.parameters(), lr=self.lr)
 
     def on_train_epoch_end(self):
         torch.save(self.state_dict(), f"models/model_{self.current_epoch}.pt")
         return super().on_train_epoch_end()
-
 
 class Trainer():
     def __init__(self, config):
