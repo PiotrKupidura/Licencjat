@@ -1,9 +1,13 @@
 import numpy as np
 from glob import glob
+import os
 
 if __name__ == "__main__":
-    dir_read = "data/7"
+    dir_read = "/mnt/e/Python/Licencjat/src/data/7"
     files = glob(f"{dir_read}/*.dat")
+    dir_write = "validation"
+    if not os.path.exists(dir_write):
+        os.makedirs(dir_write)
     helices = {}
     sheets = {}
     for file in files:
@@ -43,10 +47,11 @@ if __name__ == "__main__":
                     a = np.array([float(i) for i in line_split[5:8]])
                     helix.append(a)
                 elif ss == "S":
+                    a = np.array([float(i) for i in line_split[5:8]])
                     sheet.append(a)
                 l += 1
                 prev_ss = ss
     for key, value in helices.items():
-        np.save(f"validation/helix_{key}.npy", value)
+        np.save(f"{dir_write}/helix_{key}.npy", value)
     for key, value in sheets.items():
-        np.save(f"validation/sheet_{key}.npy", value)
+        np.save(f"{dir_write}/sheet_{key}.npy", value)
