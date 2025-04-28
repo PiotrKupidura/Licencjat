@@ -2,9 +2,6 @@ import json
 import math
 from typing import *
 
-from tqdm.utils import disp_len
-
-from core.features import Label
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -117,12 +114,12 @@ class CVAE(pl.LightningModule):
         return x
 
     def loss(self, recon_x, recon_x_disp, x, mean, log_variance, displacement, first_three, weights):
-        beta = self.beta_min + 0.5 * (self.beta_max - self.beta_min) * (math.cos(math.pi * self.current_epoch/10))
+        beta = self.beta_min + 0.5 * (self.beta_max - self.beta_min) * (1 + math.cos(math.pi + math.pi * self.current_epoch/10))
         recon_loss_1 = torch.mean(F.mse_loss(recon_x, x.flatten(1,2)[:,3:,:], reduction='none'))
         recon_loss_2 = torch.mean(F.mse_loss(recon_x_disp, x.flatten(1,2)[:,3:,:], reduction='none'))
         kl_loss = torch.mean(-0.5 * (1 + log_variance - mean.pow(2) - log_variance.exp()))
         displacement_loss = torch.mean(torch.linalg.vector_norm(1e-4+recon_x_disp[:,-1,:] - first_three[:,-1,:] - displacement, dim=-1))
-        d_weight = 2e-2
+        d_weight = 1e-1
         loss = 1 * recon_loss_1 + .0 * recon_loss_2 + beta*kl_loss + d_weight*displacement_loss #- .1*displacement_reg
         return loss, recon_loss_1, recon_loss_2, kl_loss, displacement_loss
 
@@ -134,7 +131,8 @@ class CVAE(pl.LightningModule):
 
         mean, log_variance, first_three = self.encode(inputs_cart, labels, displacement)
         z = self.sample(mean, log_variance).requires_grad_(True)
-        aa, ss = labels[:,1:,0].long(), labels[:,1:,1].long()
+        aa, ss = labels[:,1:,0], labels[:,1:,1].long()
+        aa = torch.masked_fill(aa, torch.rand_like(aa) < 0.05, 0).long()
         recon_inputs = self.decode(z, labels, displacement, first_three, train_data=inputs_cart[:,1:,:,:].flatten(1,2))
         recon_inputs_disp = self.decode(z, labels, displacement, first_three)
 

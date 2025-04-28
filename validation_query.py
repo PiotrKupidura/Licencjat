@@ -38,7 +38,7 @@ if __name__ == "__main__":
     metric = DistanceMetric.get_metric("pyfunc", func=superimpose)
     tree = BallTree(baseline, metric=metric)
     ss = torch.ones(1000, 15).cuda()
-    aa = torch.randint(0, 20, (1000, 15)).cuda()
+    aa = torch.zeros(1000, 15).cuda()
     displacement = torch.rand(1000, 3).cuda() * 10
     first_three = torch.stack([torch.tensor([-6.093,0.0,0.0]), torch.tensor([-4.065,0.0,0.0]), torch.tensor([-1.941,0.0,0.0])]).unsqueeze(0).expand(1000, -1, -1).cuda()
     labels = torch.stack([aa, ss], dim=2).long().cuda()

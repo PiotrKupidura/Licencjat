@@ -13,16 +13,14 @@ def read_weights():
     file = open("data/7/lista.txt", "r")
     weights = dict([(line.split()[0], line.split()[1]) for line in file.readlines()])
     return weights
-    
+
 
 def parse_line(line:str):
-    prob_unknown = 0.01
     x = line.split()
     inputs = np.array([x[5:8]], dtype=np.float32)
     ss = STRUCTURES[x[4]]
-    e = np.random.binomial(1, prob_unknown, 1)
     res = RESIDUES[x[1]] if x[1] in RESIDUES else 0
-    aa = np.array(res, dtype=np.float32) if e == 0 else np.array(0, dtype=np.float32) # 0 represents an unknown residue
+    aa = np.array(res, dtype=np.float32)
     labels = np.stack([aa, ss], axis=0)
     return inputs, labels
 
@@ -69,6 +67,3 @@ if __name__ == "__main__":
             continue
         np.save(inputs_file, inputs)
         np.save(labels_file, labels)
-            
-    
-
