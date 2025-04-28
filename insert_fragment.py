@@ -2,20 +2,31 @@ import os
 import argparse
 import logging
 import numpy as np
-import tensorflow as tf
 import torch
 from tabulate import tabulate
-# from core.model_torch_3 import DecoderLoader
-from core.model_torch_3 import Trainer
+from core.model import CVAE
 from core.features import LabelMLP
 from core.parser import FileParser, Structure, Atom
-from utils import Vec3
 import matplotlib.pyplot as plt
+import json
 
-logging.getLogger("tensorflow").disabled=True
-logging.getLogger("h5py._conv").disabled=True
+# logging.getLogger("tensorflow").disabled=True
+# logging.getLogger("h5py._conv").disabled=True
 
-BOND_LENGTH = 3.8
+RESIDUES = {"A": 1,  "R": 2,  "N": 3,  "D": 4,
+            "C": 5,  "Q": 6,  "E": 7,  "G": 8,
+            "H": 9,  "I": 10, "L": 11, "K": 12,
+            "M": 13, "F": 14, "P": 15, "S": 16,
+            "T": 17, "W": 18, "Y": 19, "V": 20}
+
+STRUCTURES = {"H": 1, "E": 2, "C": 3}
+
+def parse_config(config):
+    config_file = open(config, "r")
+    parameters = json.loads(config_file.read())
+    length = parameters["n"]
+    latent_dim = parameters["latent_dim"]
+    return length, latent_dim
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -30,13 +41,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     pdb = args.file
-    start = args.start 
-    end = args.end 
-    model = args.model 
+    start = args.start
+    end = args.end
+    model_path = args.model
     repeats = args.repeats
     population = args.population
 
-    input_structure = FileParser(file=pdb).load_structure() 
+    input_structure = FileParser(file=pdb).load_structure()
 
     if args.aa == None:
         aa = input_structure.read_sequence(start-1, end)
@@ -48,19 +59,20 @@ if __name__ == "__main__":
     else:
         ss = args.ss
 
-    displacement = input_structure.local_displacement(start-1, end)
+    displacement = input_structure.local_displacement(end,start-1)
 
     print(displacement)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    t = Trainer(config="config.json")
-    t.load_model(model)
-    labels = [LabelMLP(aa=aa, ss=ss, dx=displacement[0], dy=displacement[1], dz=displacement[2]).format() for _ in range(population)]
-    labels = torch.stack(labels).squeeze(1)
-    displacement_label = labels[:,-3:].float()
-    labels = torch.stack(torch.chunk(labels[:, :-3], 25, dim=1), dim=1).transpose(1,2)
-    labels = torch.cat([labels[:,:,:21].argmax(dim=2, keepdim=True), labels[:,:,21:].argmax(dim=2, keepdim=True)], dim=2) # one hot
-    labels = torch.cat((labels, displacement_label.unsqueeze(1).expand(-1, labels.shape[1], -1)), dim=-1).float()
+    n, latent_dim = parse_config("config.json")
+    model = CVAE(n, latent_dim, 0, 0, 0).to(device)
+    model.load_state_dict(torch.load(model_path))
+    aa_1 = torch.tensor([RESIDUES[res] for res in aa]).unsqueeze(0).expand(population,-1).long()
+    ss_1 = torch.tensor([STRUCTURES[s] for s in ss]).unsqueeze(0).expand(population,-1).long()
+    displacement = torch.tensor(displacement).float().unsqueeze(0).expand(population,-1)
+    labels = torch.stack([aa_1, ss_1, torch.zeros((population, end-start+2))], dim=-1)
+    labels = torch.cat([labels, displacement.unsqueeze(1).expand(-1,end-start+2,-1)], dim=-1)
+    # print(labels)
 
     # vectors = decoder.predict(labels) # raw data from decoder
     # outputs = [Output(vector) for vector in vectors]
@@ -69,10 +81,11 @@ if __name__ == "__main__":
     c_1 = input_structure._n[input_structure.find_residue(start-1)].coordinates
     c_2 = input_structure._ca[input_structure.find_residue(start-1)].coordinates
     c_3 = input_structure._c[input_structure.find_residue(start-1)].coordinates
-    
-    displacement = torch.tensor(displacement).float().unsqueeze(0).expand(population,-1)
+
+    # displacement = torch.tensor(displacement).float().unsqueeze(0).expand(population,-1)
     prev_three = torch.stack([torch.tensor(c_1),torch.tensor(c_2),torch.tensor(c_3)]).unsqueeze(0).expand(population,-1,-1).float()
-    fragments = t.model.generate(population, prev_three.to(device), labels.to(device), displacement)
+    # print(prev_three[0], labels[0], displacement[0])
+    fragments = model.generate(population, prev_three.to(device), labels.to(device), displacement.to(device))
 
     new_structures = [] # all structures obtained from generated results
     for fragment in fragments:
@@ -86,22 +99,23 @@ if __name__ == "__main__":
                 new_atoms[atom._atom_name].append(new_atom)
             else:
                 new_atoms[atom._atom_name].append(atom)
-        
+
         structure = Structure(atoms=(new_atoms["CA"], new_atoms["C"], new_atoms["N"]))
         new_structures.append(structure)
 
-    
-    new_structures.sort(key=lambda structure: torch.nn.functional.mse_loss(torch.tensor(structure.local_displacement(start-1,end)), displacement_label, reduction="mean").item())
-    print([torch.linalg.vector_norm(torch.tensor(structure.local_displacement(start,end)) - displacement_label[0]) for structure in new_structures[:10]])
-    disp = torch.linalg.vector_norm(fragments[:,-1,:].cpu()-prev_three[:,-1,:]-displacement_label, dim=1).numpy(force=True)
+
+    new_structures.sort(key=lambda structure: torch.linalg.vector_norm(torch.tensor(structure.local_displacement(end,start-1)) - displacement[0]).item())
+    print([torch.linalg.vector_norm(torch.tensor(structure.local_displacement(end,start-1)) - displacement[0]) for structure in new_structures[:10]])
+    print((fragments[:,-1,:].cpu() - prev_three[:,-1,:]).mean(dim=0))
+    disp = torch.linalg.vector_norm(fragments[:,-1,:].cpu()-prev_three[:,-1,:]-displacement, dim=1).numpy(force=True)
     plt.hist(disp, bins=100)
     plt.savefig("plots/histogram.png")
     plt.close()
     pdb_name = os.path.splitext(os.path.basename(pdb))[0]
     output_path = f"{os.path.dirname(__file__)}/generations/{pdb_name}_output.pdb"
-    
+
     output_file = open(output_path, "w")
-    
+
     for i, structure in enumerate(new_structures):
         print(f"MODEL {i+1}", file=output_file)
 

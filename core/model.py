@@ -8,14 +8,13 @@ from torch.nn import functional as F
 
 import pytorch_lightning as pl
 
-from core.layers_torch import CartesianToDihedral, DihedralToCartesian
+from core.layers import CartesianToDihedral, DihedralToCartesian
 from core.loader import FragmentDataModule
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import RichProgressBar
 from pytorch_lightning.callbacks.progress.rich_progress import RichProgressBarTheme
 import matplotlib.pyplot as plt
 from matplotlib import colors
-from umap import UMAP
 
 
 torch.set_float32_matmul_precision("medium")
@@ -31,35 +30,55 @@ class CustomProgressBar(RichProgressBar):
         return items
 
 
+class FiLMLayer(nn.Module):
+    def __init__(self, input_dim, condition_dim, output_dim):
+        super().__init__()
+        self.gamma = nn.Sequential(
+            nn.Linear(condition_dim, output_dim),
+            nn.ReLU(),
+            nn.Linear(output_dim, output_dim)
+        )
+        self.beta = nn.Sequential(
+            nn.Linear(condition_dim, output_dim),
+            nn.ReLU(),
+            nn.Linear(output_dim, output_dim)
+        )
+        self.linear = nn.Linear(input_dim, output_dim)
+        self.bn = nn.BatchNorm1d(output_dim)
+
+    def forward(self, x, condition):
+        x = self.linear(x)
+        gamma = self.gamma(condition)
+        beta = self.beta(condition)
+        x = gamma * x + beta
+        x = torch.relu(x)
+        # x = self.bn(x)
+        return x
+
+
 class CVAE(pl.LightningModule):
     def __init__(self, n, latent_dim, beta_min, beta_max, lr):
         super().__init__()
         self.beta_min = beta_min
         self.beta_max = beta_max
         self.lr = lr
-        self.input_dim = 2*3*n
-        self.label_dim = 25*n + 3
+        self.input_dim = 6*n
+        self.label_dim = 25*n+9
         self.latent_dim = latent_dim
         self.c2d = CartesianToDihedral()
         self.d2c = DihedralToCartesian()
         self.encoder = nn.Sequential(
             nn.Linear(self.input_dim+self.label_dim, 512),
             nn.ReLU(),
-            nn.Linear(512, 2048),
-            nn.ReLU(),
-            nn.Linear(2048, 512),
+            nn.Linear(512, 512),
             nn.ReLU(),
             nn.Linear(512, 2*self.latent_dim),
         )
         self.decoder = nn.Sequential(
-            nn.Linear(self.latent_dim+25*14+3,512),
-            nn.ReLU(),
-            # nn.Linear(512, 8192),
-            # nn.ReLU(),
-            # nn.Linear(8192, 512),
-            # nn.ReLU(),
-            nn.Linear(512, 84),
-            # nn.Tanh()
+            FiLMLayer(self.latent_dim, self.label_dim, 1024),
+            FiLMLayer(1024, self.label_dim, 512),
+            FiLMLayer(512, self.label_dim, 128),
+            nn.Linear(128,self.input_dim),
         )
         def init_weights(m):
             if isinstance(m, nn.Linear):
@@ -67,105 +86,109 @@ class CVAE(pl.LightningModule):
                 m.bias.data.fill_(0.01)
         self.apply(init_weights)
         self.angles = []
-        self.latent = []
-        self.alpha = []
-        self.theta = []
-        self.norm = []
-        
-    
+
     def encode(self, x, labels, displacement):
         aa, ss = labels[:,1:,0].long(), labels[:,1:,1].long()
         x, first_three = self.c2d(x)
-        x = torch.cat([x, F.one_hot(aa.type(torch.LongTensor).cuda(), num_classes=21).flatten(1), F.one_hot(ss.type(torch.LongTensor).cuda(), num_classes=4).flatten(1), displacement], dim=-1)
-        x = self.encoder(x)
+        displacement_1 = torch.cat([displacement, (first_three[:,:-1,:] - first_three[:,-1,:].unsqueeze(1)).flatten(1)], dim=1)
+        x = self.encoder(torch.cat([x, F.one_hot(aa.type(torch.LongTensor).to(self.device), num_classes=21).flatten(1), F.one_hot(ss.type(torch.LongTensor).to(self.device), num_classes=4).flatten(1), displacement_1], dim=-1))
         mean, log_variance = torch.chunk(x, 2, dim=-1)
         return mean, log_variance, first_three
-    
+
     def sample(self, mean, log_variance):
         std = torch.exp(0.5 * log_variance)
         epsilon = torch.randn_like(std, device=std.device)
         return mean + std * epsilon
-    
+
     def decode(self, x, labels, displacement, first_three, return_angles=False, train_data=None):
         aa, ss = labels[:,1:,0].long(), labels[:,1:,1].long()
-        x = torch.cat([x.cuda(), F.one_hot(aa.type(torch.LongTensor).cuda(), num_classes=21).flatten(1), F.one_hot(ss.type(torch.LongTensor).cuda(), num_classes=4).flatten(1), displacement.cuda()], dim=-1)
-        x = self.decoder(x) #* torch.full((x.shape[0],42), math.pi, device=self.device)
+        displacement_1 = torch.cat([displacement, (first_three[:,:-1,:] - first_three[:,-1,:].unsqueeze(1)).flatten(1)], dim=1)
+        aa = F.one_hot(aa.type(torch.LongTensor).to(self.device), num_classes=21).flatten(1)
+        ss = F.one_hot(ss.type(torch.LongTensor).to(self.device), num_classes=4).flatten(1)
+        for layer in self.decoder:
+            if isinstance(layer, FiLMLayer):
+                x = layer(x, torch.cat([displacement_1, aa, ss], dim=1))
+            else:
+                x = layer(x)
         x = self.d2c((x, first_three),return_angles=return_angles, train_data=train_data)
         return x
-    
+
     def loss(self, recon_x, recon_x_disp, x, mean, log_variance, displacement, first_three, weights):
-        beta = self.beta_min + 0.5 * (self.beta_max - self.beta_min) * (math.cos(math.pi * self.current_epoch/10))
-        recon_loss = torch.mean(F.mse_loss(recon_x, x.flatten(1,2)[:,3:,:], reduction='none'))
+        beta = self.beta_min + 0.5 * (self.beta_max - self.beta_min) * (1 + math.cos(math.pi + math.pi * self.current_epoch/10))
+        recon_loss_1 = torch.mean(F.mse_loss(recon_x, x.flatten(1,2)[:,3:,:], reduction='none'))
+        recon_loss_2 = torch.mean(F.mse_loss(recon_x_disp, x.flatten(1,2)[:,3:,:], reduction='none'))
         kl_loss = torch.mean(-0.5 * (1 + log_variance - mean.pow(2) - log_variance.exp()))
-        displacement_loss = torch.mean(F.mse_loss(recon_x_disp[:,-1,:] - first_three[:,-1,:], displacement, reduction='none'))
-        loss = recon_loss + beta*kl_loss + .0*displacement_loss
-        return loss, recon_loss, kl_loss, displacement_loss
-    
+        displacement_loss = torch.mean(torch.linalg.vector_norm(1e-4+recon_x_disp[:,-1,:] - first_three[:,-1,:] - displacement, dim=-1))
+        d_weight = 1e-1
+        loss = 1 * recon_loss_1 + .0 * recon_loss_2 + beta*kl_loss + d_weight*displacement_loss #- .1*displacement_reg
+        return loss, recon_loss_1, recon_loss_2, kl_loss, displacement_loss
+
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx):
         inputs_cart, labels = batch
         weights = labels[:,-1,2].unsqueeze(1).unsqueeze(2)
         labels = labels[:,:,(0,1,3,4,5)]
-        
         displacement = inputs_cart[:,-1,-1,:] - inputs_cart[:,0,-1,:]
-        
+
         mean, log_variance, first_three = self.encode(inputs_cart, labels, displacement)
-        
-        z = self.sample(mean, log_variance)
+        z = self.sample(mean, log_variance).requires_grad_(True)
+        aa, ss = labels[:,1:,0], labels[:,1:,1].long()
+        aa = torch.masked_fill(aa, torch.rand_like(aa) < 0.05, 0).long()
         recon_inputs = self.decode(z, labels, displacement, first_three, train_data=inputs_cart[:,1:,:,:].flatten(1,2))
         recon_inputs_disp = self.decode(z, labels, displacement, first_three)
-    
-        loss, recon_loss, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs_disp, inputs_cart, mean, log_variance, displacement, first_three, weights)
-        
+
+        loss, recon_loss_1, recon_loss_2, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs_disp, inputs_cart, mean, log_variance, displacement, first_three, weights)
+
         self.log("train_loss", loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
-        self.log("train_recon_loss", recon_loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
+        self.log("train_recon_loss_1", recon_loss_1, on_step=True, on_epoch=False, prog_bar=True, logger=True)
+        self.log("train_recon_loss_2", recon_loss_2, on_step=True, on_epoch=False, prog_bar=True, logger=True)
         self.log("train_kl_loss", kl_loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
         self.log("train_displacement", displacement_loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
-        
+        self.log("train_displacement_1", torch.mean(F.mse_loss(recon_inputs_disp[:,-1,:] - first_three[:,-1,:], displacement, reduction='none')), on_step=True, on_epoch=False, prog_bar=True, logger=True)
+
         return loss
-    
+
     def validation_step(self, batch, batch_idx):
         inputs_cart, labels = batch
         weights = labels[:,-1,2].unsqueeze(1).unsqueeze(2)
         labels = labels[:,:,(0,1,3,4,5)]
-        
         displacement = inputs_cart[:,-1,-1,:] - inputs_cart[:,0,-1,:]
-        
+
         mean, log_variance, first_three = self.encode(inputs_cart, labels, displacement)
         z = self.sample(mean, log_variance)
-        recon_inputs, angles = self.decode(z, labels, displacement, first_three, return_angles=True)
-        self.latent.append(z)
-        self.alpha.append(torch.arccos(displacement[:,-1]/torch.linalg.vector_norm(displacement, dim=1)))
-        self.theta.append(torch.sign(displacement[:,1]) * torch.acos(displacement[:,0]/torch.sqrt(displacement[:,0]**2 + displacement[:,1]**2)))
-        self.norm.append(torch.linalg.vector_norm(displacement, dim=1))
-        
-        loss, recon_loss, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs, inputs_cart, mean, log_variance, displacement, first_three, weights)
+        recon_inputs = self.decode(z, labels, displacement, first_three)
+
+        loss, recon_loss, _, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs, inputs_cart, mean, log_variance, displacement, first_three, weights)
+
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("val_recon_loss", recon_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("val_kl_loss", kl_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("val_displacement", displacement_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        
+        self.log("val_displacement_1", torch.mean(F.mse_loss(recon_inputs[:,-1,:] - first_three[:,-1,:], displacement, reduction='none')), on_step=True, on_epoch=False, prog_bar=True, logger=True)
+
+
         # benchmark generation
-        
+
         recon_inputs, angles = self.generate(inputs_cart.shape[0], first_three, labels, displacement, return_angles=True)
-        loss, recon_loss, kl_loss, displacement = self.loss(recon_inputs, recon_inputs, inputs_cart, mean, log_variance, displacement, first_three, weights)
-        below_1 = torch.mean((displacement < 1.0).float())
+        loss, recon_loss, _, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs, inputs_cart, mean, log_variance, displacement, first_three, weights)
+        below_1 = torch.mean((displacement_loss < 1.0).float())
         self.log("val_recon_loss_generation", recon_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("val_displacement_generation", displacement, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log("val_displacement_generation", displacement_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("val_below_1_generation", below_1, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        
+        self.log("generation_displacement_1", torch.mean(F.mse_loss(recon_inputs[:,-1,:] - first_three[:,-1,:], displacement, reduction='none')), on_step=True, on_epoch=False, prog_bar=True, logger=True)
+
+
         self.angles.append(angles)
-        
-        
+
     def generate(self, n, first_three, labels, displacement, return_angles=False):
-        z = torch.randn((n, self.latent_dim))
+        z = torch.randn((n, self.latent_dim), device=self.device)
         return self.decode(z, labels, displacement, first_three, return_angles=return_angles)
-    
-    
+
+
     def on_validation_end(self):
         if len(self.angles) == 0:
             return
         angles = torch.cat(self.angles)
-        
+
         # fig, ax = plt.subplots()
         # ax.hist2d(angles[:,0].cpu().detach().numpy(), angles[:,1].cpu().detach().numpy(), bins=[300,300], range=[[-math.pi, math.pi], [-math.pi, math.pi]], cmap="Blues", norm=colors.LogNorm())
         # ax.set_xlabel("psi")
@@ -174,7 +197,7 @@ class CVAE(pl.LightningModule):
         # ax.set_ylim(-math.pi, math.pi)
         # fig.savefig(f'plots/plot_psi_omega_{self.current_epoch}.png')
         # plt.close(fig)
-        
+
         fig, ax = plt.subplots()
         ax.hist2d(angles[:,2].cpu().detach().numpy(), angles[:,0].cpu().detach().numpy(), bins=[300,300], range=[[-math.pi, math.pi], [-math.pi, math.pi]], cmap="Blues", norm=colors.LogNorm())
         ax.set_xlabel("phi")
@@ -183,7 +206,7 @@ class CVAE(pl.LightningModule):
         ax.set_ylim(-math.pi, math.pi)
         fig.savefig(f'plots/plot_phi_psi_{self.current_epoch}.png')
         plt.close(fig)
-        
+
         # fig, ax = plt.subplots()
         # ax.hist2d(angles[:,1].cpu().detach().numpy(), angles[:,2].cpu().detach().numpy(), bins=[300,300], range=[[-math.pi, math.pi], [-math.pi, math.pi]], cmap="Blues", norm=colors.LogNorm())
         # ax.set_xlabel("omega")
@@ -192,49 +215,25 @@ class CVAE(pl.LightningModule):
         # ax.set_ylim(-math.pi, math.pi)
         # fig.savefig(f'plots/plot_omega_phi_{self.current_epoch}.png')
         # plt.close(fig)
-        
+
         self.angles = []
-        
-        latent = torch.cat(self.latent)
-        latent = UMAP(n_components=2).fit_transform(latent.numpy(force=True))
-        
-        fig, ax = plt.subplots()
-        a = ax.scatter(latent[:,0], latent[:,1], c=torch.cat(self.alpha).numpy(force=True))
-        fig.colorbar(a)
-        fig.savefig("plots/latent_alpha.png")
-        plt.close(fig)
-        self.alpha = []
-        
-        fig, ax = plt.subplots()
-        a = ax.scatter(latent[:,0], latent[:,1], c=torch.cat(self.theta).numpy(force=True))
-        fig.colorbar(a)
-        fig.savefig("plots/latent_theta.png")
-        plt.close(fig)
-        self.theta = []
-        
-        fig, ax = plt.subplots()
-        a = ax.scatter(latent[:,0], latent[:,1], c=torch.cat(self.norm).numpy(force=True))
-        fig.colorbar(a)
-        fig.savefig("plots/latent_norm.png")
-        plt.close(fig)
-        self.norm = []
-    
-    
+
+
     def configure_optimizers(self):
         return torch.optim.Adam([{'params': self.encoder.parameters()}, {'params': self.decoder.parameters()},], lr=self.lr)
-    
+
     def on_train_epoch_end(self):
         torch.save(self.state_dict(), f"models/model_{self.current_epoch}.pt")
         return super().on_train_epoch_end()
-    
-    
+
+
 class Trainer():
     def __init__(self, config):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         config_file = open(config, "r")
         parameters = json.loads(config_file.read())
-        
+
         self.n = parameters["n"]
         self.latent_dim = parameters["latent_dim"]
         self.learning_rate = parameters["learning_rate"]
@@ -246,12 +245,12 @@ class Trainer():
         self.dir_read = parameters["dir_read"]
 
         config_file.close()
-        
+
         m = FragmentDataModule()
         m.setup(dir_read=self.dir_read)
         self.training_inputs = m.train_dataloader(self.train_batch_size)
-        self.test_inputs = m.val_dataloader(self.val_batch_size)   
-        
+        self.test_inputs = m.val_dataloader(self.val_batch_size)
+
         progress_bar = CustomProgressBar(
             theme=RichProgressBarTheme(
                 description="grey82",
@@ -265,7 +264,7 @@ class Trainer():
                 metrics_format=".3f",
             )
         )
-        
+
         accelerators = {"cpu": "cpu", "cuda": "gpu"}
         self.trainer = pl.Trainer(accelerator=accelerators[self.device], max_epochs=self.epochs, check_val_every_n_epoch=1, callbacks=[progress_bar], inference_mode=False)
 
@@ -275,16 +274,15 @@ class Trainer():
             beta_min=self.beta_min,
             beta_max=self.beta_max,
             lr=self.learning_rate
-        ).to("cuda")
-        self.model.to(self.device) 
-    
+        ).to(self.device)
+        self.model.to(self.device)
+
     def train(self):
         self.trainer.fit(self.model, self.training_inputs, self.test_inputs)
         torch.save(self.model.state_dict(), "models/model.pt")
-        
+
     def load_model(self, path):
         self.model.load_state_dict(torch.load(path, weights_only=True))
-        
+
     def validate(self):
         self.trainer.validate(self.model, self.test_inputs)
-        
