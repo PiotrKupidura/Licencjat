@@ -39,6 +39,7 @@ class CVAE(pl.LightningModule):
         self.input_dim = 6*n
         self.label_dim = 25*n+9
         self.latent_dim = latent_dim
+        self.n = n
         self.c2d = CartesianToDihedral()
         self.d2c = DihedralToCartesian()
         self.encoder = nn.Sequential(
@@ -99,6 +100,8 @@ class CVAE(pl.LightningModule):
 
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx):
         inputs_cart, labels = batch
+        inputs_cart = inputs_cart[:,:self.n+1]
+        labels = labels[:,:self.n+1]
         weights = labels[:,-1,2].unsqueeze(1).unsqueeze(2)
         labels = labels[:,:,(0,1,3,4,5)]
         displacement = inputs_cart[:,-1,-1,:] - inputs_cart[:,0,-1,:]
@@ -123,6 +126,8 @@ class CVAE(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         inputs_cart, labels = batch
+        inputs_cart = inputs_cart[:,:self.n+1]
+        labels = labels[:,:self.n+1]
         weights = labels[:,-1,2].unsqueeze(1).unsqueeze(2)
         labels = labels[:,:,(0,1,3,4,5)]
         displacement = inputs_cart[:,-1,-1,:] - inputs_cart[:,0,-1,:]
@@ -155,7 +160,7 @@ class CVAE(pl.LightningModule):
 
     def generate(self, n, first_three, labels, displacement, return_angles=False):
         z = torch.randn((n, self.latent_dim), device=self.device)
-        return self.decode(z, labels, displacement, first_three, return_angles=return_angles)[0]
+        return self.decode(z, labels, displacement, first_three, return_angles=return_angles)
 
 
     def on_validation_end(self):

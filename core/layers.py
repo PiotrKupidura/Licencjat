@@ -59,7 +59,7 @@ class CartesianToDihedral(torch.nn.Module):
         angles: dihedral angles (batch_size, num_res, 2)
         first_three: coordinates of the first three atoms (batch_size, 3, 3)
         """
-        inputs = torch.stack(torch.split(inputs.flatten(1,2),inputs.shape[1]//3,dim=-1)).transpose(0,1).transpose(1,2).squeeze(2)
+        inputs = inputs.flatten(1,2)
         angles = []
         angles_out = []
         for i in range(0, inputs.shape[1]-3):
@@ -117,7 +117,7 @@ class DihedralToCartesian(torch.nn.Module):
             res[:,i,:] = d_cart.squeeze(1)
 
         if return_angles:
-            res_angles = torch.atan2(sin_theta.squeeze(2), cos_theta.squeeze(2)+1e-8).unflatten(1, (14,3)).flatten(0,1)
+            res_angles = torch.atan2(sin_theta.squeeze(2), cos_theta.squeeze(2)+1e-8).unflatten(1, (angles.shape[1]//3,3)).flatten(0,1)
             return res, res_angles
 
         return res

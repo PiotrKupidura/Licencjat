@@ -37,16 +37,16 @@ if __name__ == "__main__":
     model.load_state_dict(torch.load(args.model, weights_only=True))
     metric = DistanceMetric.get_metric("pyfunc", func=superimpose)
     tree = BallTree(baseline, metric=metric)
-    ss = torch.ones(1000, 15).cuda()
+    ss = torch.ones(1000, length+1).cuda()
     # aa = torch.zeros(1000, 15).cuda()
-    aa = torch.randint(1, 21, (1000, 15)).cuda()
+    aa = torch.randint(1, 21, (1000, length+1)).cuda()
     displacement = torch.rand(1000, 3).cuda() * 10
     first_three = torch.stack([torch.tensor([-6.093,0.0,0.0]), torch.tensor([-4.065,0.0,0.0]), torch.tensor([-1.941,0.0,0.0])]).unsqueeze(0).expand(1000, -1, -1).cuda()
     labels = torch.stack([aa, ss], dim=2).long().cuda()
     with torch.no_grad():
         x = model.generate(1000, first_three, labels, displacement)
     x = x - x[:,1].unsqueeze(1)
-    ind = torch.tensor(list(range(1, 42, 3)), dtype=torch.long).cuda()
+    ind = torch.tensor(list(range(1, length*3, 3)), dtype=torch.long).cuda()
     x = x[:,ind,:]
     x = x.flatten(1).cpu().numpy()
     distance, neighbors = tree.query(x, k=1, return_distance=True)
