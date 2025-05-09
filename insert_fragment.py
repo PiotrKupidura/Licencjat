@@ -67,6 +67,7 @@ if __name__ == "__main__":
     n, latent_dim = parse_config("config.json")
     model = CVAE(n, latent_dim, 0, 0, 0).to(device)
     model.load_state_dict(torch.load(model_path))
+    # aa_1 = torch.tensor([0 for res in aa]).unsqueeze(0).expand(population,-1).long()
     aa_1 = torch.tensor([RESIDUES[res] for res in aa]).unsqueeze(0).expand(population,-1).long()
     ss_1 = torch.tensor([STRUCTURES[s] for s in ss]).unsqueeze(0).expand(population,-1).long()
     displacement = torch.tensor(displacement).float().unsqueeze(0).expand(population,-1)

@@ -30,32 +30,6 @@ class CustomProgressBar(RichProgressBar):
         return items
 
 
-class FiLMLayer(nn.Module):
-    def __init__(self, input_dim, condition_dim, output_dim):
-        super().__init__()
-        self.gamma = nn.Sequential(
-            nn.Linear(condition_dim, output_dim),
-            nn.ReLU(),
-            nn.Linear(output_dim, output_dim)
-        )
-        self.beta = nn.Sequential(
-            nn.Linear(condition_dim, output_dim),
-            nn.ReLU(),
-            nn.Linear(output_dim, output_dim)
-        )
-        self.linear = nn.Linear(input_dim, output_dim)
-        self.bn = nn.BatchNorm1d(output_dim)
-
-    def forward(self, x, condition):
-        x = self.linear(x)
-        gamma = self.gamma(condition)
-        beta = self.beta(condition)
-        x = gamma * x + beta
-        x = torch.relu(x)
-        # x = self.bn(x)
-        return x
-
-
 class CVAE(pl.LightningModule):
     def __init__(self, n, latent_dim, beta_min, beta_max, lr):
         super().__init__()
@@ -74,12 +48,11 @@ class CVAE(pl.LightningModule):
             nn.ReLU(),
             nn.Linear(512, 2*self.latent_dim),
         )
-        self.decoder = nn.Sequential(
-            FiLMLayer(self.latent_dim, self.label_dim, 1024),
-            FiLMLayer(1024, self.label_dim, 512),
-            FiLMLayer(512, self.label_dim, 128),
-            nn.Linear(128,self.input_dim),
-        )
+        self.decoder = nn.ModuleList([
+            nn.Linear(self.latent_dim+self.label_dim, 1024),
+            nn.Linear(1024+self.latent_dim, 1024),
+            nn.Linear(1024+self.latent_dim, self.input_dim),
+        ])
         def init_weights(m):
             if isinstance(m, nn.Linear):
                 torch.nn.init.xavier_uniform_(m.weight)
@@ -97,19 +70,20 @@ class CVAE(pl.LightningModule):
 
     def sample(self, mean, log_variance):
         std = torch.exp(0.5 * log_variance)
+        # std = torch.ones_like(log_variance)
         epsilon = torch.randn_like(std, device=std.device)
         return mean + std * epsilon
 
-    def decode(self, x, labels, displacement, first_three, return_angles=False, train_data=None):
+    def decode(self, z, labels, displacement, first_three, return_angles=False, train_data=None):
         aa, ss = labels[:,1:,0].long(), labels[:,1:,1].long()
         displacement_1 = torch.cat([displacement, (first_three[:,:-1,:] - first_three[:,-1,:].unsqueeze(1)).flatten(1)], dim=1)
         aa = F.one_hot(aa.type(torch.LongTensor).to(self.device), num_classes=21).flatten(1)
         ss = F.one_hot(ss.type(torch.LongTensor).to(self.device), num_classes=4).flatten(1)
-        for layer in self.decoder:
-            if isinstance(layer, FiLMLayer):
-                x = layer(x, torch.cat([displacement_1, aa, ss], dim=1))
-            else:
-                x = layer(x)
+        x = torch.cat([z, displacement_1, aa, ss], dim=1)
+        x = self.decoder[0](x)
+        for layer in self.decoder[1:]:
+            x = F.relu(x)
+            x = layer(torch.cat([x,z],dim=1))
         x = self.d2c((x, first_three),return_angles=return_angles, train_data=train_data)
         return x
 
@@ -132,7 +106,7 @@ class CVAE(pl.LightningModule):
         mean, log_variance, first_three = self.encode(inputs_cart, labels, displacement)
         z = self.sample(mean, log_variance).requires_grad_(True)
         aa, ss = labels[:,1:,0], labels[:,1:,1].long()
-        aa = torch.masked_fill(aa, torch.rand_like(aa) < 0.05, 0).long()
+        aa = torch.masked_fill(aa, torch.rand_like(aa) < 0.25, 0).long()
         recon_inputs = self.decode(z, labels, displacement, first_three, train_data=inputs_cart[:,1:,:,:].flatten(1,2))
         recon_inputs_disp = self.decode(z, labels, displacement, first_three)
 
@@ -181,7 +155,7 @@ class CVAE(pl.LightningModule):
 
     def generate(self, n, first_three, labels, displacement, return_angles=False):
         z = torch.randn((n, self.latent_dim), device=self.device)
-        return self.decode(z, labels, displacement, first_three, return_angles=return_angles)
+        return self.decode(z, labels, displacement, first_three, return_angles=return_angles)[0]
 
 
     def on_validation_end(self):

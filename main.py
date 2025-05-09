@@ -1,4 +1,4 @@
-from core.model_torch_3 import Trainer
+from core.model import Trainer
 
 
 if __name__ == '__main__':

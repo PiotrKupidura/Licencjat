@@ -73,7 +73,7 @@ class CartesianToDihedral(torch.nn.Module):
         if return_angles:
             return angles, first_three, torch.cat(angles_out)
 
-        angles = torch.cat([angles[:,:,i] for i in range(2)], dim=-1) #a1a2t1t2
+        angles = torch.cat([angles[:,:,i] for i in range(2)], dim=-1) #s1s2c1c2
         return angles, first_three.squeeze(2)
 
 class DihedralToCartesian(torch.nn.Module):
@@ -89,7 +89,7 @@ class DihedralToCartesian(torch.nn.Module):
         cartesian coordinates (batch_size, num_res*3, 3)
         """
         angles, prev_three = inputs
-        angles = torch.reshape(torch.cat(torch.chunk(angles,2,dim=-1),dim=1),(angles.shape[0],2,angles.shape[1]//2)).transpose(1,2) #a1a2t1t2
+        angles = torch.reshape(torch.cat(torch.chunk(angles,2,dim=-1),dim=1),(angles.shape[0],2,angles.shape[1]//2)).transpose(1,2) #s1s2c1c2
 
         res = torch.zeros((angles.shape[0], angles.shape[1], 3), device=angles.device)
         a, b, c = torch.split(prev_three,1,dim=1)
@@ -105,7 +105,7 @@ class DihedralToCartesian(torch.nn.Module):
         # Each atoms rotation does not depend on its position and thus can be computed once
         ca_c_bond, c_n_bond, n_ca_bond = 1.458, 1.523, 1.329
         rotation = torch.stack([cos_alpha, sin_alpha*cos_theta.squeeze(2), -sin_alpha*sin_theta.squeeze(2)], dim=2) \
-        * torch.tensor([ca_c_bond, c_n_bond, n_ca_bond]*(angles.shape[1]//3), device=angles.device).unsqueeze(0).unsqueeze(2).expand(angles.shape[0],-1,3)
+        * torch.tensor([n_ca_bond, ca_c_bond, c_n_bond]*(angles.shape[1]//3), device=angles.device).unsqueeze(0).unsqueeze(2).expand(angles.shape[0],-1,3)
 
         for i in range(0, angles.shape[1], 1):
             d_cart = extend(a,b,c,rotation[:,i,:])
