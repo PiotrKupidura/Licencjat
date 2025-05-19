@@ -62,8 +62,11 @@ if __name__ == "__main__":
     model = CVAE(n, latent_dim, 0, 0, 0).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     # aa_1 = torch.tensor([0 for res in aa]).unsqueeze(0).expand(repeats,-1).long()
-    aa_1 = torch.tensor([RESIDUES[res] for res in aa]).unsqueeze(0).expand(repeats,-1).long()[:,1:]
-    ss_1 = torch.tensor([STRUCTURES[s] for s in ss]).unsqueeze(0).expand(repeats,-1).long()[:,1:]
+    aa_1 = torch.tensor([RESIDUES[res] for res in aa]).unsqueeze(0).expand(repeats,-1).long()
+    ss_1 = torch.tensor([STRUCTURES[s] for s in ss]).unsqueeze(0).expand(repeats,-1).long()
+    if args.aa is None:
+        aa_1 = aa_1[:,1:]
+        ss_1 = ss_1[:,1:]
     displacement = torch.tensor(displacement).float().unsqueeze(0).expand(repeats,-1)
 
     # bound atoms not included in rebuilt fragment
