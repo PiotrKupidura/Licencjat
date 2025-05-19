@@ -1,0 +1,11 @@
+{
+  "dir_read": "data",
+  "n": 7,
+  "latent_dim": 7,
+  "train_batch_size": 2048,
+  "val_batch_size": 4096,
+  "epochs": 200,
+  "beta_min": 2e-4,
+  "beta_max": 2e-2,
+  "learning_rate": 1e-3
+}
