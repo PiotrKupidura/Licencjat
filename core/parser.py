@@ -122,37 +122,25 @@ class Structure:
     def local_displacement(self, i, j):
         return self._c[self.find_residue(i)].coordinates - self._c[self.find_residue(j)].coordinates
 
-    def split_chains(self):
-        chains = {}
-        for atom in self.atoms:
-            if atom.chain_name in chains:
-                chains[atom.chain_name].append(atom)
-            else:
-                chains[atom.chain_name] = [atom]
-        for chain in chains:
-            chains[chain] = Structure(atoms=chains[chain])
-        return chains
-
     def generate_observations(self, len_fragment, weight):
         inputs = []
         labels = []
-        for i in range(self.length() - len_fragment + 1):
+        for i in range(len(self._ca) - len_fragment + 1):
             inp = np.zeros((len_fragment,3,3))
             lab = np.zeros((len_fragment,3))
             ignore = False
             for j, ca, c, n in zip(range(len_fragment), self._ca[i:i+len_fragment], self._c[i:i+len_fragment], self._n[i:i+len_fragment]):
                 inp[j] = np.array([[n.x, n.y, n.z], [ca.x, ca.y, ca.z], [c.x, c.y, c.z]])
-                if ca.residue in RESIDUES_NUM:
-                    lab[j, 0] = RESIDUES_NUM[ca.residue]
-                else:
+                residue = ca.residue if len(ca.residue) == 3 else ca.residue[1:]
+                if residue not in RESIDUES_NUM:
                     ignore = True
-                    break
+                    continue
+                lab[j, 0] = RESIDUES_NUM[residue]
                 lab[j, 1] = STRUCTURES[ca.ss]
                 lab[j, 2] = weight
             if ignore:
-                ignore = False
                 continue
-            if self.atoms[i+len_fragment-1].residue_id - self.atoms[i].residue_id == len_fragment - 1:
+            if self._ca[i+len_fragment-1].residue_id - self._ca[i].residue_id == len_fragment - 1:
                 inputs.append(inp)
                 labels.append(lab)
         if len(inputs) > 0:
@@ -279,7 +267,7 @@ class FileParser:
                     numbers.append(i)
         return numbers
 
-    def load_atoms(self):
+    def load_atoms(self, chain=None):
         ca = []
         c = []
         n = []
@@ -288,6 +276,9 @@ class FileParser:
             return ca, c, n
         parser = LineParser(records[0])
         chain = parser.parse_chain_name()
+        ca_present = False
+        c_present = False
+        n_present = False
         for record in records:
             parser = LineParser(record)
             id = parser.parse_id()
@@ -295,7 +286,7 @@ class FileParser:
             residue = parser.parse_residue()
             residue_id = parser.parse_residue_id()
             chain_name = parser.parse_chain_name()
-            if chain_name != chain:
+            if chain is not None and chain_name != chain:
                 continue
             x = parser.parse_x()
             y = parser.parse_y()
@@ -311,11 +302,22 @@ class FileParser:
                     ss = "E"
             if len(residue) == 3 or residue[0] == "A":
                 if atom_name == "CA":
-                    ca.append(Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
+                    ca_current = (Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
+                    ca_present = True
                 elif atom_name == "C":
-                    c.append(Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
+                    c_current = (Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
+                    c_present = True
                 elif atom_name == "N":
-                    n.append(Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
+                    n_current = (Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
+                    n_present = True
+            # omit incomplete residues
+            if ca_present and c_present and n_present:
+                ca.append(ca_current)
+                c.append(c_current)
+                n.append(n_current)
+                ca_present = False
+                c_present = False
+                n_present = False
         return ca, c, n
 
     def load_structure(self, chain=None):

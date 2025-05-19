@@ -51,9 +51,9 @@ class CVAE(pl.LightningModule):
         )
         self.decoder = nn.ModuleList([
             nn.Linear(self.latent_dim+self.label_dim, 1024),
-            nn.Linear(1024+self.latent_dim+self.label_dim, 1024),
-            nn.Linear(1024+self.latent_dim+self.label_dim, 1024),
-            nn.Linear(1024+self.latent_dim+self.label_dim, self.input_dim),
+            nn.Linear(1024+self.latent_dim, 1024),
+            nn.Linear(1024+self.latent_dim, 1024),
+            nn.Linear(1024+self.latent_dim, self.input_dim),
         ])
         def init_weights(m):
             if isinstance(m, nn.Linear):
@@ -104,7 +104,7 @@ class CVAE(pl.LightningModule):
         x = self.decoder[0](x)
         for layer in self.decoder[1:]:
             x = F.relu(x)
-            x = layer(torch.cat([x, z, aa, ss, displacement],dim=1))
+            x = layer(torch.cat([x, z],dim=1))
         x = self.d2c((x, first_three),return_angles=return_angles, train_data=train_data)
         return x
 
@@ -123,11 +123,11 @@ class CVAE(pl.LightningModule):
         # Cylic annealing of the KL loss coefficient
         beta = self.beta_min + 0.5 * (self.beta_max - self.beta_min) * (1 + math.cos(math.pi + math.pi * self.current_epoch/10))
         # Reconstruction loss using ground truth atom positions
-        recon_loss = torch.mean(weights * F.mse_loss(recon_x, x.flatten(1,2)[:,3:,:], reduction='none'))
+        recon_loss = torch.mean(F.mse_loss(recon_x, x.flatten(1,2)[:,3:,:], reduction='none'))
         # KL loss
-        kl_loss = torch.mean(-0.5 * weights * (1 + log_variance - mean.pow(2) - log_variance.exp()))
+        kl_loss = torch.mean(-0.5 * (1 + log_variance - mean.pow(2) - log_variance.exp()))
         # Displacement loss (no ground truth)
-        displacement_loss = torch.mean(weights * torch.linalg.vector_norm(1e-4+recon_x_disp[:,-1,:] - first_three[:,-1,:] - displacement, dim=-1))
+        displacement_loss = torch.mean(torch.linalg.vector_norm(1e-4+recon_x_disp[:,-1,:] - first_three[:,-1,:] - displacement, dim=-1))
         d_weight = 1e-1
         loss = recon_loss + beta*kl_loss + d_weight*displacement_loss
         return loss, recon_loss, kl_loss, displacement_loss
@@ -137,13 +137,12 @@ class CVAE(pl.LightningModule):
         inputs_cart = inputs_cart[:,:self.n+1]
         labels = labels[:,:self.n+1]
         weights = labels[:,-1,2].unsqueeze(1).unsqueeze(2)
-        labels = labels[:,:,(0,1,3,4,5)]
         displacement = inputs_cart[:,-1,-1,:] - inputs_cart[:,0,-1,:]
         aa, ss = labels[:,1:,0], labels[:,1:,1].long()
         aa = torch.masked_fill(aa, torch.rand_like(aa) < 0.25, 0).long()
 
         mean, log_variance, first_three = self.encode(inputs_cart, aa, ss, displacement)
-        z = self.sample(mean, log_variance).requires_grad_(True)
+        z = self.sample(mean, log_variance)
         recon_inputs = self.decode(z, aa, ss, displacement, first_three, train_data=inputs_cart[:,1:,:,:].flatten(1,2))
         recon_inputs_disp = self.decode(z, aa, ss, displacement, first_three)
 
@@ -161,15 +160,15 @@ class CVAE(pl.LightningModule):
         inputs_cart = inputs_cart[:,:self.n+1]
         labels = labels[:,:self.n+1]
         weights = labels[:,-1,2].unsqueeze(1).unsqueeze(2)
-        labels = labels[:,:,(0,1,3,4,5)]
         displacement = inputs_cart[:,-1,-1,:] - inputs_cart[:,0,-1,:]
         aa, ss = labels[:,1:,0], labels[:,1:,1].long()
 
         mean, log_variance, first_three = self.encode(inputs_cart, aa, ss, displacement)
         z = self.sample(mean, log_variance)
-        recon_inputs = self.decode(z, labels, aa, ss, first_three)
+        recon_inputs = self.decode(z, aa, ss, displacement, first_three)
+        recon_inputs_disp = self.decode(z, aa, ss, displacement, first_three, train_data=inputs_cart[:,1:,:,:].flatten(1,2))
 
-        loss, recon_loss, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs, inputs_cart, mean, log_variance, displacement, first_three, weights)
+        loss, recon_loss, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs_disp, inputs_cart, mean, log_variance, displacement, first_three, weights)
 
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("val_recon_loss", recon_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
