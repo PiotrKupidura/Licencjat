@@ -9,9 +9,6 @@ from core.parser import FileParser, Structure, Atom
 import matplotlib.pyplot as plt
 import json
 
-# logging.getLogger("tensorflow").disabled=True
-# logging.getLogger("h5py._conv").disabled=True
-
 RESIDUES = {"A": 1,  "R": 2,  "N": 3,  "D": 4,
             "C": 5,  "Q": 6,  "E": 7,  "G": 8,
             "H": 9,  "I": 10, "L": 11, "K": 12,
@@ -60,32 +57,23 @@ if __name__ == "__main__":
 
     displacement = input_structure.local_displacement(end,start-1)
 
-    print(aa, ss, displacement)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n, latent_dim = parse_config("config.json")
     model = CVAE(n, latent_dim, 0, 0, 0).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     # aa_1 = torch.tensor([0 for res in aa]).unsqueeze(0).expand(population,-1).long()
-    aa_1 = torch.tensor([RESIDUES[res] for res in aa]).unsqueeze(0).expand(population,-1).long()
-    ss_1 = torch.tensor([STRUCTURES[s] for s in ss]).unsqueeze(0).expand(population,-1).long()
+    aa_1 = torch.tensor([RESIDUES[res] for res in aa]).unsqueeze(0).expand(population,-1).long()[:,1:]
+    ss_1 = torch.tensor([STRUCTURES[s] for s in ss]).unsqueeze(0).expand(population,-1).long()[:,1:]
     displacement = torch.tensor(displacement).float().unsqueeze(0).expand(population,-1)
-    labels = torch.stack([aa_1, ss_1, torch.zeros((population, end-start+2))], dim=-1)
-    labels = torch.cat([labels, displacement.unsqueeze(1).expand(-1,end-start+2,-1)], dim=-1)
-    # print(labels)
-
-    # vectors = decoder.predict(labels) # raw data from decoder
-    # outputs = [Output(vector) for vector in vectors]
 
     # bound atoms not included in rebuilt fragment
     c_1 = input_structure._n[input_structure.find_residue(start-1)].coordinates
     c_2 = input_structure._ca[input_structure.find_residue(start-1)].coordinates
     c_3 = input_structure._c[input_structure.find_residue(start-1)].coordinates
 
-    # displacement = torch.tensor(displacement).float().unsqueeze(0).expand(population,-1)
     prev_three = torch.stack([torch.tensor(c_1),torch.tensor(c_2),torch.tensor(c_3)]).unsqueeze(0).expand(population,-1,-1).float()
-    # print(prev_three[0], labels[0], displacement[0])
-    fragments = model.generate(population, prev_three.to(device), labels.to(device), displacement.to(device))
+    fragments = model.generate(population, prev_three.to(device), aa_1.to(device), ss_1.to(device), displacement.to(device))
 
     new_structures = [] # all structures obtained from generated results
     for fragment in fragments:

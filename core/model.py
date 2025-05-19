@@ -163,12 +163,13 @@ class CVAE(pl.LightningModule):
         weights = labels[:,-1,2].unsqueeze(1).unsqueeze(2)
         labels = labels[:,:,(0,1,3,4,5)]
         displacement = inputs_cart[:,-1,-1,:] - inputs_cart[:,0,-1,:]
+        aa, ss = labels[:,1:,0], labels[:,1:,1].long()
 
-        mean, log_variance, first_three = self.encode(inputs_cart, labels, displacement)
+        mean, log_variance, first_three = self.encode(inputs_cart, aa, ss, displacement)
         z = self.sample(mean, log_variance)
-        recon_inputs = self.decode(z, labels, displacement, first_three)
+        recon_inputs = self.decode(z, labels, aa, ss, first_three)
 
-        loss, recon_loss, _, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs, inputs_cart, mean, log_variance, displacement, first_three, weights)
+        loss, recon_loss, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs, inputs_cart, mean, log_variance, displacement, first_three, weights)
 
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("val_recon_loss", recon_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
@@ -177,15 +178,15 @@ class CVAE(pl.LightningModule):
 
         # benchmark generation
 
-        recon_inputs, angles = self.generate(inputs_cart.shape[0], first_three, labels, displacement, return_angles=True)
-        loss, recon_loss, _, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs, inputs_cart, mean, log_variance, displacement, first_three, weights)
+        recon_inputs, angles = self.generate(inputs_cart.shape[0], first_three, aa, ss, displacement, return_angles=True)
+        loss, recon_loss, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs, inputs_cart, mean, log_variance, displacement, first_three, weights)
         self.log("val_displacement_generation", displacement_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
         self.angles.append(angles)
 
-    def generate(self, n, first_three, labels, displacement, return_angles=False):
+    def generate(self, n, first_three, aa, ss, displacement, return_angles=False):
         z = torch.randn((n, self.latent_dim), device=self.device)
-        return self.decode(z, labels, displacement, first_three, return_angles=return_angles)
+        return self.decode(z, aa, ss, displacement, first_three, return_angles=return_angles)
 
 
     def on_validation_end(self):
