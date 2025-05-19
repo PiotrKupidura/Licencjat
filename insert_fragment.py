@@ -5,7 +5,6 @@ import numpy as np
 import torch
 from tabulate import tabulate
 from core.model import CVAE
-from core.features import LabelMLP
 from core.parser import FileParser, Structure, Atom
 import matplotlib.pyplot as plt
 import json
@@ -61,12 +60,12 @@ if __name__ == "__main__":
 
     displacement = input_structure.local_displacement(end,start-1)
 
-    print(displacement)
+    print(aa, ss, displacement)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n, latent_dim = parse_config("config.json")
     model = CVAE(n, latent_dim, 0, 0, 0).to(device)
-    model.load_state_dict(torch.load(model_path))
+    model.load_state_dict(torch.load(model_path, map_location=device))
     # aa_1 = torch.tensor([0 for res in aa]).unsqueeze(0).expand(population,-1).long()
     aa_1 = torch.tensor([RESIDUES[res] for res in aa]).unsqueeze(0).expand(population,-1).long()
     ss_1 = torch.tensor([STRUCTURES[s] for s in ss]).unsqueeze(0).expand(population,-1).long()

@@ -51,8 +51,9 @@ class CVAE(pl.LightningModule):
         )
         self.decoder = nn.ModuleList([
             nn.Linear(self.latent_dim+self.label_dim, 1024),
-            nn.Linear(1024+self.latent_dim, 1024),
-            nn.Linear(1024+self.latent_dim, self.input_dim),
+            nn.Linear(1024+self.latent_dim+self.label_dim, 1024),
+            nn.Linear(1024+self.latent_dim+self.label_dim, 1024),
+            nn.Linear(1024+self.latent_dim+self.label_dim, self.input_dim),
         ])
         def init_weights(m):
             if isinstance(m, nn.Linear):
@@ -61,42 +62,75 @@ class CVAE(pl.LightningModule):
         self.apply(init_weights)
         self.angles = []
 
-    def encode(self, x, labels, displacement):
-        aa, ss = labels[:,1:,0].long(), labels[:,1:,1].long()
+    def encode(self, x, aa, ss, displacement):
+        """
+        Projects the inpus onto the latent space.
+        x: (batch_size, n+1, 3) - Cartesian coordinates
+        aa: (batch_size, n+1) - amino acid types
+        ss: (batch_size, n+1) - secondary structure types
+        displacement: (batch_size, 3) - displacement vector
+        """
         x, first_three = self.c2d(x)
-        displacement_1 = torch.cat([displacement, (first_three[:,:-1,:] - first_three[:,-1,:].unsqueeze(1)).flatten(1)], dim=1)
-        x = self.encoder(torch.cat([x, F.one_hot(aa.type(torch.LongTensor).to(self.device), num_classes=21).flatten(1), F.one_hot(ss.type(torch.LongTensor).to(self.device), num_classes=4).flatten(1), displacement_1], dim=-1))
+        displacement = torch.cat([displacement, (first_three[:,:-1,:] - first_three[:,-1,:].unsqueeze(1)).flatten(1)], dim=1)
+        x = self.encoder(torch.cat([x, F.one_hot(aa.type(torch.LongTensor).to(self.device), num_classes=21).flatten(1),
+                                       F.one_hot(ss.type(torch.LongTensor).to(self.device), num_classes=4).flatten(1),
+                                       displacement], dim=-1))
         mean, log_variance = torch.chunk(x, 2, dim=-1)
         return mean, log_variance, first_three
 
     def sample(self, mean, log_variance):
+        """
+        Samples from the latent space.
+        mean: (batch_size, latent_dim) - mean of the latent space
+        log_variance: (batch_size, latent_dim) - log variance of the latent space
+        """
         std = torch.exp(0.5 * log_variance)
-        # std = torch.ones_like(log_variance)
         epsilon = torch.randn_like(std, device=std.device)
         return mean + std * epsilon
 
-    def decode(self, z, labels, displacement, first_three, return_angles=False, train_data=None):
-        aa, ss = labels[:,1:,0].long(), labels[:,1:,1].long()
-        displacement_1 = torch.cat([displacement, (first_three[:,:-1,:] - first_three[:,-1,:].unsqueeze(1)).flatten(1)], dim=1)
+    def decode(self, z, aa, ss, displacement, first_three, return_angles=False, train_data=None):
+        """
+        Decodes the latent space into the input coordinates.
+        z: (batch_size, latent_dim) - latent space
+        aa: (batch_size, n+1) - amino acid types
+        ss: (batch_size, n+1) - secondary structure types
+        displacement: (batch_size, 3) - displacement vector
+        first_three: (batch_size, n+1, 3) - first three coordinates
+        """
+        displacement = torch.cat([displacement, (first_three[:,:-1,:] - first_three[:,-1,:].unsqueeze(1)).flatten(1)], dim=1)
         aa = F.one_hot(aa.type(torch.LongTensor).to(self.device), num_classes=21).flatten(1)
         ss = F.one_hot(ss.type(torch.LongTensor).to(self.device), num_classes=4).flatten(1)
-        x = torch.cat([z, displacement_1, aa, ss], dim=1)
+        x = torch.cat([z, displacement, aa, ss], dim=1)
         x = self.decoder[0](x)
         for layer in self.decoder[1:]:
             x = F.relu(x)
-            x = layer(torch.cat([x,z],dim=1))
+            x = layer(torch.cat([x, z, aa, ss, displacement],dim=1))
         x = self.d2c((x, first_three),return_angles=return_angles, train_data=train_data)
         return x
 
     def loss(self, recon_x, recon_x_disp, x, mean, log_variance, displacement, first_three, weights):
+        """
+        Computes the loss function.
+        recon_x: (batch_size, n+1, 3) - reconstructed coordinates using ground truth atom positions
+        recon_x_disp: (batch_size, n+1, 3) - reconstructed coordinates without ground truth atom positions
+        x: (batch_size, n+1, 3) - ground truth coordinates
+        mean: (batch_size, latent_dim) - mean of the latent space
+        log_variance: (batch_size, latent_dim) - log variance of the latent space
+        displacement: (batch_size, 3) - displacement vector
+        first_three: (batch_size, n+1, 3) - first three coordinates
+        weights: (batch_size, n+1, 1) - weights of the structures
+        """
+        # Cylic annealing of the KL loss coefficient
         beta = self.beta_min + 0.5 * (self.beta_max - self.beta_min) * (1 + math.cos(math.pi + math.pi * self.current_epoch/10))
-        recon_loss_1 = torch.mean(F.mse_loss(recon_x, x.flatten(1,2)[:,3:,:], reduction='none'))
-        recon_loss_2 = torch.mean(F.mse_loss(recon_x_disp, x.flatten(1,2)[:,3:,:], reduction='none'))
-        kl_loss = torch.mean(-0.5 * (1 + log_variance - mean.pow(2) - log_variance.exp()))
-        displacement_loss = torch.mean(torch.linalg.vector_norm(1e-4+recon_x_disp[:,-1,:] - first_three[:,-1,:] - displacement, dim=-1))
+        # Reconstruction loss using ground truth atom positions
+        recon_loss = torch.mean(weights * F.mse_loss(recon_x, x.flatten(1,2)[:,3:,:], reduction='none'))
+        # KL loss
+        kl_loss = torch.mean(-0.5 * weights * (1 + log_variance - mean.pow(2) - log_variance.exp()))
+        # Displacement loss (no ground truth)
+        displacement_loss = torch.mean(weights * torch.linalg.vector_norm(1e-4+recon_x_disp[:,-1,:] - first_three[:,-1,:] - displacement, dim=-1))
         d_weight = 1e-1
-        loss = 1 * recon_loss_1 + .0 * recon_loss_2 + beta*kl_loss + d_weight*displacement_loss #- .1*displacement_reg
-        return loss, recon_loss_1, recon_loss_2, kl_loss, displacement_loss
+        loss = recon_loss + beta*kl_loss + d_weight*displacement_loss
+        return loss, recon_loss, kl_loss, displacement_loss
 
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx):
         inputs_cart, labels = batch
@@ -105,22 +139,20 @@ class CVAE(pl.LightningModule):
         weights = labels[:,-1,2].unsqueeze(1).unsqueeze(2)
         labels = labels[:,:,(0,1,3,4,5)]
         displacement = inputs_cart[:,-1,-1,:] - inputs_cart[:,0,-1,:]
-
-        mean, log_variance, first_three = self.encode(inputs_cart, labels, displacement)
-        z = self.sample(mean, log_variance).requires_grad_(True)
         aa, ss = labels[:,1:,0], labels[:,1:,1].long()
         aa = torch.masked_fill(aa, torch.rand_like(aa) < 0.25, 0).long()
-        recon_inputs = self.decode(z, labels, displacement, first_three, train_data=inputs_cart[:,1:,:,:].flatten(1,2))
-        recon_inputs_disp = self.decode(z, labels, displacement, first_three)
 
-        loss, recon_loss_1, recon_loss_2, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs_disp, inputs_cart, mean, log_variance, displacement, first_three, weights)
+        mean, log_variance, first_three = self.encode(inputs_cart, aa, ss, displacement)
+        z = self.sample(mean, log_variance).requires_grad_(True)
+        recon_inputs = self.decode(z, aa, ss, displacement, first_three, train_data=inputs_cart[:,1:,:,:].flatten(1,2))
+        recon_inputs_disp = self.decode(z, aa, ss, displacement, first_three)
+
+        loss, recon_loss, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs_disp, inputs_cart, mean, log_variance, displacement, first_three, weights)
 
         self.log("train_loss", loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
-        self.log("train_recon_loss_1", recon_loss_1, on_step=True, on_epoch=False, prog_bar=True, logger=True)
-        self.log("train_recon_loss_2", recon_loss_2, on_step=True, on_epoch=False, prog_bar=True, logger=True)
+        self.log("train_recon_loss", recon_loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
         self.log("train_kl_loss", kl_loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
         self.log("train_displacement", displacement_loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
-        self.log("train_displacement_1", torch.mean(F.mse_loss(recon_inputs_disp[:,-1,:] - first_three[:,-1,:], displacement, reduction='none')), on_step=True, on_epoch=False, prog_bar=True, logger=True)
 
         return loss
 
@@ -142,19 +174,12 @@ class CVAE(pl.LightningModule):
         self.log("val_recon_loss", recon_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("val_kl_loss", kl_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("val_displacement", displacement_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("val_displacement_1", torch.mean(F.mse_loss(recon_inputs[:,-1,:] - first_three[:,-1,:], displacement, reduction='none')), on_step=True, on_epoch=False, prog_bar=True, logger=True)
-
 
         # benchmark generation
 
         recon_inputs, angles = self.generate(inputs_cart.shape[0], first_three, labels, displacement, return_angles=True)
         loss, recon_loss, _, kl_loss, displacement_loss = self.loss(recon_inputs, recon_inputs, inputs_cart, mean, log_variance, displacement, first_three, weights)
-        below_1 = torch.mean((displacement_loss < 1.0).float())
-        self.log("val_recon_loss_generation", recon_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("val_displacement_generation", displacement_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("val_below_1_generation", below_1, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("generation_displacement_1", torch.mean(F.mse_loss(recon_inputs[:,-1,:] - first_three[:,-1,:], displacement, reduction='none')), on_step=True, on_epoch=False, prog_bar=True, logger=True)
-
 
         self.angles.append(angles)
 
@@ -168,15 +193,7 @@ class CVAE(pl.LightningModule):
             return
         angles = torch.cat(self.angles)
 
-        # fig, ax = plt.subplots()
-        # ax.hist2d(angles[:,0].cpu().detach().numpy(), angles[:,1].cpu().detach().numpy(), bins=[300,300], range=[[-math.pi, math.pi], [-math.pi, math.pi]], cmap="Blues", norm=colors.LogNorm())
-        # ax.set_xlabel("psi")
-        # ax.set_ylabel("omega")
-        # ax.set_xlim(-math.pi, math.pi)
-        # ax.set_ylim(-math.pi, math.pi)
-        # fig.savefig(f'plots/plot_psi_omega_{self.current_epoch}.png')
-        # plt.close(fig)
-
+        # plot the histogram of the angles
         fig, ax = plt.subplots()
         ax.hist2d(angles[:,2].cpu().detach().numpy(), angles[:,0].cpu().detach().numpy(), bins=[300,300], range=[[-math.pi, math.pi], [-math.pi, math.pi]], cmap="Blues", norm=colors.LogNorm())
         ax.set_xlabel("phi")
@@ -185,15 +202,6 @@ class CVAE(pl.LightningModule):
         ax.set_ylim(-math.pi, math.pi)
         fig.savefig(f'plots/plot_phi_psi_{self.current_epoch}.png')
         plt.close(fig)
-
-        # fig, ax = plt.subplots()
-        # ax.hist2d(angles[:,1].cpu().detach().numpy(), angles[:,2].cpu().detach().numpy(), bins=[300,300], range=[[-math.pi, math.pi], [-math.pi, math.pi]], cmap="Blues", norm=colors.LogNorm())
-        # ax.set_xlabel("omega")
-        # ax.set_ylabel("phi")
-        # ax.set_xlim(-math.pi, math.pi)
-        # ax.set_ylim(-math.pi, math.pi)
-        # fig.savefig(f'plots/plot_omega_phi_{self.current_epoch}.png')
-        # plt.close(fig)
 
         self.angles = []
 

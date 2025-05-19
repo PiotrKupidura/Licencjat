@@ -1,4 +1,3 @@
-from re import L
 from sklearn.neighbors import BallTree
 import numpy as np
 from core.model import CVAE

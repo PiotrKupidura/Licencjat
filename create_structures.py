@@ -1,15 +1,23 @@
 import numpy as np
 from glob import glob
 import os
+import argparse
 
 if __name__ == "__main__":
-    dir_read = "/mnt/e/Python/Licencjat/src/data/7"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dir_read", type=str)
+    parser.add_argument("--dir_write", type=str)
+    args = parser.parse_args()
+    dir_read = args.dir_read
+    dir_write = args.dir_write
+
+
     files = glob(f"{dir_read}/*.dat")
-    dir_write = "validation"
     if not os.path.exists(dir_write):
         os.makedirs(dir_write)
     helices = {}
     sheets = {}
+    
     for file in files:
         with open(file, "r") as f:
             l = 0
@@ -21,25 +29,26 @@ if __name__ == "__main__":
                 if len(line_split) < 9:
                     continue
                 ss = line_split[4]
+                # If the current structure ends, save it
                 if ss != prev_ss:
                     if prev_ss == "H":
                         if l in helices:
                             a = np.stack(helix, axis=0)
-                            a = a - a[0]
+                            a = a - a[0] # center the structure
                             helices[l].append(a)
                         else:
                             a = np.stack(helix, axis=0)
-                            a = a - a[0]
+                            a = a - a[0] # center the structure
                             helices[l] = [a]
                         helix = []
                     elif prev_ss == "S":
                         if l in sheets:
                             a = np.stack(sheet, axis=0)
-                            a = a - a[0]
+                            a = a - a[0] # center the structure
                             sheets[l].append(a)
                         else:
                             a = np.stack(sheet, axis=0)
-                            a = a - a[0]
+                            a = a - a[0] # center the structure
                             sheets[l] = [a]
                         sheet = []
                     l = 0

@@ -1,15 +1,13 @@
 from torch.utils.data import Dataset
 import numpy as np
-import torch
 from glob import glob
 import lightning as L
 import torch.utils.data as data
+from random import shuffle
 
 
 class FragmentDataset(Dataset):
-    def __init__(self, dir_read):
-        files_input = sorted(glob(f"{dir_read}/inputs/*.npy"))
-        files_label = sorted(glob(f"{dir_read}/labels/*.npy"))
+    def __init__(self, files_input, files_label):
         inputs, labels = [], []
         for file_i, file_l in zip(files_input, files_label):
             inputs.append(np.load(file_i).astype(np.float32))
@@ -26,11 +24,19 @@ class FragmentDataset(Dataset):
 
 class FragmentDataModule(L.LightningDataModule):
     def setup(self, dir_read):
-        dataset = FragmentDataset(dir_read)
-        n = len(dataset)
-        t = int(n * 0.9)
-        self.train, self.val = data.random_split(
-            dataset, [0.9,0.1], generator=torch.Generator().manual_seed(42)
+        files_input = sorted(glob(f"{dir_read}/inputs/*.npy"))
+        files_label = sorted(glob(f"{dir_read}/labels/*.npy"))
+        ind = list(range(len(files_input)))
+        shuffle(ind)
+        val_ind = ind[:int(len(ind)*0.1)]
+        train_ind = ind[int(len(ind)*0.1):]
+        self.train = FragmentDataset(
+            [files_input[i] for i in train_ind],
+            [files_label[i] for i in train_ind]
+        )
+        self.val = FragmentDataset(
+            [files_input[i] for i in val_ind],
+            [files_label[i] for i in val_ind]
         )
 
     def train_dataloader(self, batch_size=1024):

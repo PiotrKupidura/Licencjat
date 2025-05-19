@@ -107,7 +107,7 @@ class Structure:
         string = ""
         atoms = self._ca[self.find_residue(i):self.find_residue(j)+1]
         for atom in atoms:
-            string += RESIDUES[atom.residue]
+            string += RESIDUES[atom.residue[-3:]]
         return string 
     
     def read_secondary_structure(self, i, j):
@@ -179,13 +179,13 @@ class LineParser:
     
     def parse_atom_name(self):
         ORDINAL_START = 13
-        ORDINAL_END = 17
+        ORDINAL_END = 16
         return self.line[ORDINAL_START:ORDINAL_END].strip()
     
     def parse_residue(self):
-        ORDINAL_START = 17
+        ORDINAL_START = 16
         ORDINAL_END = 20
-        return self.line[ORDINAL_START:ORDINAL_END]
+        return self.line[ORDINAL_START:ORDINAL_END].strip()
     
     def parse_residue_id(self):
         ORDINAL_START = 22
@@ -242,7 +242,7 @@ class FileParser:
             ORDINAL_END_ATOM = 4
             if line[ORDINAL_START_ATOM:ORDINAL_END_ATOM] == "ATOM":
                 ORDINAL_START_CA = 13
-                ORDINAL_END_CA = 17
+                ORDINAL_END_CA = 16
                 # print(line[ORDINAL_START_CA:ORDINAL_END_CA].strip())
                 if line[ORDINAL_START_CA:ORDINAL_END_CA].strip() in ["CA", "C", "N"]:
                     records.append(line)
@@ -312,12 +312,13 @@ class FileParser:
                     ss = "H"
                 if residue_id in self.parse_sheet():
                     ss = "E"
-            if atom_name == "CA":
-                ca.append(Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
-            elif atom_name == "C":
-                c.append(Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
-            elif atom_name == "N":
-                n.append(Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
+            if len(residue) == 3 or residue[0] == "A":
+                if atom_name == "CA":
+                    ca.append(Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
+                elif atom_name == "C":
+                    c.append(Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
+                elif atom_name == "N":
+                    n.append(Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
         return ca, c, n
 
     def load_structure(self, chain=None):
