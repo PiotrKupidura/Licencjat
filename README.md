@@ -52,7 +52,7 @@ Extracts all fragments containing only one secondary structures to be used for v
 - dir_write - directory where the resulting .npy files should be saved
 #### Validation query
 ```
-python3 validation_query.py --model -n
+python3 validation_query.py --model --n
 ```
 Generates a given number of fragments and for each of them computes the distance (RMSD after superposition) to its closer neighbour from PDB.
 ##### Parameters:
