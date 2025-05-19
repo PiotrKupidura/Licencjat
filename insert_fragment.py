@@ -8,6 +8,7 @@ from core.model import CVAE
 from core.parser import FileParser, Structure, Atom
 import matplotlib.pyplot as plt
 import json
+import os
 
 RESIDUES = {"A": 1,  "R": 2,  "N": 3,  "D": 4,
             "C": 5,  "Q": 6,  "E": 7,  "G": 8,
@@ -95,9 +96,13 @@ if __name__ == "__main__":
     print((fragments[:,-1,:].cpu() - prev_three[:,-1,:]).mean(dim=0))
     disp = torch.linalg.vector_norm(fragments[:,-1,:].cpu()-prev_three[:,-1,:]-displacement, dim=1).numpy(force=True)
     plt.hist(disp, bins=100)
-    plt.savefig("plots/histogram.png")
+    if not os.path.exists(f"{os.path.dirname(__file__)}/plots"):    
+        os.makedirs(f"{os.path.dirname(__file__)}/plots")
+    plt.savefig(f"{os.path.dirname(__file__)}/plots/histogram.png")
     plt.close()
     pdb_name = os.path.splitext(os.path.basename(pdb))[0]
+    if not os.path.exists(f"{os.path.dirname(__file__)}/generations"):
+        os.makedirs(f"{os.path.dirname(__file__)}/generations")
     output_path = f"{os.path.dirname(__file__)}/generations/{pdb_name}_output.pdb"
 
     output_file = open(output_path, "w")
