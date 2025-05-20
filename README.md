@@ -24,7 +24,7 @@ Generates a fragment with the desired amino acid sequence, secondary structure a
 - e - number of the last residue in the fragment
 - m - path to the .pt file with the pretrained model
 - r - number of fragments to be generated
-```
+
 ##### Example usage
 ```
 python3 insert_fragments.py -aa -ss  -f 2VZ5.pdb -s -e -m model.pt -r 50
