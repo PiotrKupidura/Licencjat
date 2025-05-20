@@ -27,7 +27,7 @@ class Atom:
     def __str__(self):
         formatters = ("ATOM", self._id, self._atom_name, self.residue, self.chain_name, self.residue_id, self.coordinates[0],
                       self.coordinates[1], self.coordinates[2], 1.00, 0.00, "C")
-        return "%4s %6d %3s %4s %s %4d %10.3f %7.3f %7.3f %5.2f %5.2f %11s" % formatters
+        return "%4s %6d  %-2s %4s %s%4d  %10.3f %7.3f %7.3f %5.2f %5.2f %11s" % formatters
 
     def __lt__(self, other):
         return self.residue_id < other.residue_id
