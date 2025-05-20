@@ -17,13 +17,18 @@ python3 insert_fragments.py -aa -ss -f -s -e -m -r
 Generates a fragment with the desired amino acid sequence, secondary structure and orientation and inserts it into a PDB file
 .
 ##### Parameters:
-- aa - amino acid sequence of the generated fragment
-- ss - secondary structure in HEC format
+- aa - amino acid sequence of the generated fragment (optional, defaults to the sequence from PDB file)
+- ss - secondary structure in HEC format (optional, defaults to the secondary structure from PDB file)
 - f - path to the PDB file into which the fragment will be inserted
 - s - number of the first residue in the fragment
 - e - number of the last residue in the fragment
 - m - path to the .pt file with the pretrained model
 - r - number of fragments to be generated
+```
+##### Example usage
+```
+python3 insert_fragments.py -aa -ss  -f 2VZ5.pdb -s -e -m model.pt -r 50
+```
 #### Train
 ```
 python3 train.py
@@ -32,7 +37,7 @@ python3 train.py
 Trains the model.
 #### Create dataset from PDB
 ```
-python3 create_dataset_from_pdb.py --dir_read --dir_write --list_path --len_fragment
+python3 create_dataset_from_pdb.py -dir_read -dir_write -list_path -len_fragment
 ```
 
 Extracts the backbone coordinates, amino acid sequence and secondary structure from PDB files and saves them in .npy format.
@@ -44,7 +49,7 @@ Extracts the backbone coordinates, amino acid sequence and secondary structure f
 - len_fragment - length of the created fragments (should be 1 more than the desired fragment length (n in config) as the first 3 atoms are not included in the reconstruction
 #### Extract secondary structures
 ```
-python3 extract_structures.py --dir_read --dir_write
+python3 extract_structures.py -dir_read -dir_write
 ```
 Extracts all fragments containing only one secondary structures to be used for validation.
 ##### Parameters
@@ -52,7 +57,7 @@ Extracts all fragments containing only one secondary structures to be used for v
 - dir_write - directory where the resulting .npy files should be saved
 #### Validation query
 ```
-python3 validation_query.py --model --n
+python3 validation_query.py -model -n
 ```
 Generates a given number of fragments and for each of them computes the distance (RMSD after superposition) to its closer neighbour from PDB.
 ##### Parameters:

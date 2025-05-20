@@ -8,7 +8,9 @@ from core.model import CVAE
 from core.parser import FileParser, Structure, Atom
 import matplotlib.pyplot as plt
 import json
-import os
+
+# logging.getLogger("tensorflow").disabled=True
+# logging.getLogger("h5py._conv").disabled=True
 
 RESIDUES = {"A": 1,  "R": 2,  "N": 3,  "D": 4,
             "C": 5,  "Q": 6,  "E": 7,  "G": 8,
@@ -29,11 +31,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-aa", type=str, help="amino acids sequence")
     parser.add_argument("-ss", type=str, help="secondary structure")
-    parser.add_argument("-f", "--file", type=str, help="PDB file")
-    parser.add_argument("-s", "--start", type=int, help="initial residue")
-    parser.add_argument("-e", "--end", type=int, help="terminal residue")
-    parser.add_argument("-m", "--model", type=str, help="model to be used")
-    parser.add_argument("-r", "--repeats", type=int, help="number of returned fragments")
+    parser.add_argument("-f", "--file", type=str, help="PDB file", required=True)
+    parser.add_argument("-s", "--start", type=int, help="initial residue", required=True)
+    parser.add_argument("-e", "--end", type=int, help="terminal residue", required=True)
+    parser.add_argument("-m", "--model", type=str, help="model to be used", required=True)
+    parser.add_argument("-r", "--repeats", type=int, help="number of returned fragments", required=True)
     args = parser.parse_args()
 
     pdb = args.file
@@ -53,22 +55,29 @@ if __name__ == "__main__":
         ss = input_structure.read_secondary_structure(start-1, end)
     else:
         ss = args.ss
-
-    displacement = input_structure.local_displacement(end,start-1)
-
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    n, latent_dim = parse_config("config.json")
-    model = CVAE(n, latent_dim, 0, 0, 0).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
     # aa_1 = torch.tensor([0 for res in aa]).unsqueeze(0).expand(repeats,-1).long()
     aa_1 = torch.tensor([RESIDUES[res] for res in aa]).unsqueeze(0).expand(repeats,-1).long()
     ss_1 = torch.tensor([STRUCTURES[s] for s in ss]).unsqueeze(0).expand(repeats,-1).long()
     if args.aa is None:
         aa_1 = aa_1[:,1:]
         ss_1 = ss_1[:,1:]
+        aa = aa[1:]
+        ss = ss[1:]
+    if len(aa) != end-start+1:
+        raise ValueError(f"The number of residues in the input sequence ({len(aa)}) does not match the desired fragment length ({end-start+1})")
+    if len(ss) != end-start+1:
+        raise ValueError(f"The number of residues in the input secondary structure ({len(ss)}) does not match the desired fragment length ({end-start+1})")
+
+    displacement = input_structure.local_displacement(end,start-1)
     displacement = torch.tensor(displacement).float().unsqueeze(0).expand(repeats,-1)
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    n, latent_dim = parse_config("config.json")
+    if n != end-start+1:
+        raise ValueError(f"The fragment length of the model ({n}) does not match the desired fragment length ({end-start+1})")
+    model = CVAE(n, latent_dim, 0, 0, 0).to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    
     # bound atoms not included in rebuilt fragment
     c_1 = input_structure._n[input_structure.find_residue(start-1)].coordinates
     c_2 = input_structure._ca[input_structure.find_residue(start-1)].coordinates
@@ -95,8 +104,6 @@ if __name__ == "__main__":
 
 
     new_structures.sort(key=lambda structure: torch.linalg.vector_norm(torch.tensor(structure.local_displacement(end,start-1)) - displacement[0]).item())
-    print([torch.linalg.vector_norm(torch.tensor(structure.local_displacement(end,start-1)) - displacement[0]) for structure in new_structures[:10]])
-    print((fragments[:,-1,:].cpu() - prev_three[:,-1,:]).mean(dim=0))
     disp = torch.linalg.vector_norm(fragments[:,-1,:].cpu()-prev_three[:,-1,:]-displacement, dim=1).numpy(force=True)
     plt.hist(disp, bins=100)
     if not os.path.exists(f"{os.path.dirname(__file__)}/plots"):    

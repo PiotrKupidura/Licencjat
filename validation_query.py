@@ -25,9 +25,9 @@ def superimpose(x, y):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str)
-    parser.add_argument("--dir_read", type=str)
-    parser.add_argument("--n", type=int)
+    parser.add_argument("-model", type=str, required=True)
+    parser.add_argument("-dir_read", type=str, required=True)
+    parser.add_argument("-n", type=int, required=True)
     args = parser.parse_args()
     config = "config.json"
     length, latent_dim = parse_config(config)

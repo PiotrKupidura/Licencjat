@@ -8,8 +8,8 @@ from multiprocessing import Pool, cpu_count
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dir_read", type=str)
-    parser.add_argument("--dir_write", type=str)
+    parser.add_argument("-dir_read", type=str, required=True)
+    parser.add_argument("-dir_write", type=str, required=True)
     args = parser.parse_args()
     dir_read = args.dir_read
     dir_write = args.dir_write

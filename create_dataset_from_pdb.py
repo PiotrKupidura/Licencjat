@@ -21,10 +21,10 @@ def read_weights(list_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dir_read", type=str)
-    parser.add_argument("--dir_write", type=str)
-    parser.add_argument("--list_path", type=str)
-    parser.add_argument("--len_fragment", type=int) # 1 more than the number of residues in the generated fragments
+    parser.add_argument("-dir_read", type=str, required=True)
+    parser.add_argument("-dir_write", type=str, required=True)
+    parser.add_argument("-list_path", type=str, required=True)
+    parser.add_argument("-len_fragment", type=int, required=True) # 1 more than the number of residues in the generated fragments
     args = parser.parse_args()
     dir_read = args.dir_read
     dir_write = args.dir_write
