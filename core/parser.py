@@ -26,8 +26,8 @@ class Atom:
 
     def __str__(self):
         formatters = ("ATOM", self._id, self._atom_name, self.residue, self.chain_name, self.residue_id, self.coordinates[0],
-                      self.coordinates[1], self.coordinates[2], 1.00, 0.00, "C")
-        return "%4s %6d %3s %4s %s %4d %10.3f %7.3f %7.3f %5.2f %5.2f %11s" % formatters
+                      self.coordinates[1], self.coordinates[2], 1.00, 0.00, self._atom_name[0])
+        return "%4s %6d  %-2s %4s %s%4d  %10.3f %7.3f %7.3f %5.2f %5.2f %11s" % formatters
 
     def __lt__(self, other):
         return self.residue_id < other.residue_id
@@ -76,9 +76,17 @@ class Atom:
         self._coordinates = vector
 
 
+class MissingO(Atom):
+    def __init__(self, ss, id, atom_name, residue, residue_id, chain_name, coordinates):
+        super().__init__(ss, id, atom_name, residue, residue_id, chain_name, coordinates)
+    
+    def __str__(self):
+        return ""
+
+
 class Structure:
-    def __init__(self, atoms: List[Atom]):
-        self._ca, self._c, self._n = atoms
+    def __init__(self, atoms: List[Atom], missing_o_index=None):
+        self._ca, self._c, self._n, self._o = atoms
         self.atoms = []
         if len(self._n) != len(self._ca) or len(self._ca) != len(self._c):
             print(len(self._n), len(self._ca), len(self._c))
@@ -86,6 +94,8 @@ class Structure:
             self.atoms.append(self._n[i])
             self.atoms.append(self._ca[i])
             self.atoms.append(self._c[i])
+            if len(self._o) > i:
+                self.atoms.append(self._o[i])
 
     def length(self):
         return len(self.atoms)
@@ -231,7 +241,7 @@ class FileParser:
                 ORDINAL_START_CA = 13
                 ORDINAL_END_CA = 16
                 # print(line[ORDINAL_START_CA:ORDINAL_END_CA].strip())
-                if line[ORDINAL_START_CA:ORDINAL_END_CA].strip() in ["CA", "C", "N"]:
+                if line[ORDINAL_START_CA:ORDINAL_END_CA].strip() in ["CA", "C", "N", "O"]:
                     records.append(line)
         return records
 
@@ -271,6 +281,7 @@ class FileParser:
         ca = []
         c = []
         n = []
+        o = []
         records = self.parse_atoms()
         if len(records) == 0:
             return ca, c, n
@@ -279,6 +290,7 @@ class FileParser:
         ca_present = False
         c_present = False
         n_present = False
+        o_present = False
         for record in records:
             parser = LineParser(record)
             id = parser.parse_id()
@@ -300,6 +312,7 @@ class FileParser:
                     ss = "H"
                 if residue_id in self.parse_sheet():
                     ss = "E"
+            # print(atom_name)
             if len(residue) == 3 or residue[0] == "A":
                 if atom_name == "CA":
                     ca_current = (Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
@@ -310,15 +323,21 @@ class FileParser:
                 elif atom_name == "N":
                     n_current = (Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
                     n_present = True
+                elif atom_name == "O":
+                    o_current = (Atom(ss=ss, id=id, atom_name=atom_name, residue=residue, residue_id=residue_id, chain_name=chain_name, coordinates=coordinates))
+                    o_present = True
             # omit incomplete residues
-            if ca_present and c_present and n_present:
+            if ca_present and c_present and n_present and o_present:
                 ca.append(ca_current)
                 c.append(c_current)
                 n.append(n_current)
+                o.append(o_current)
                 ca_present = False
                 c_present = False
                 n_present = False
-        return ca, c, n
+                o_present = False
+        # print(len(ca), len(c), len(n), len(o))
+        return ca, c, n, o
 
     def load_structure(self, chain=None):
         return Structure(atoms=self.load_atoms())

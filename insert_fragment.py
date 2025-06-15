@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from tabulate import tabulate
 from core.model import CVAE
-from core.parser import FileParser, Structure, Atom
+from core.parser import FileParser, Structure, Atom, MissingO
 import matplotlib.pyplot as plt
 import json
 
@@ -88,18 +88,33 @@ if __name__ == "__main__":
 
     new_structures = [] # all structures obtained from generated results
     for fragment in fragments:
-        new_atoms = {"N":[], "CA":[], "C":[]}
-        offset = {"N":0, "CA":1, "C":2}
+        new_atoms = {"N":[], "CA":[], "C":[], "O":[]}
+        offset = {"N":0, "CA":1, "C":2, "O":3}
         for atom in input_structure.atoms:
+            vec_index = 3*(atom.residue_id - start) + offset[atom._atom_name]
             if atom.residue_id >= start and atom.residue_id <= end:
-                vec_index = 3*(atom.residue_id - start) + offset[atom._atom_name]
-                coordinates = fragment[vec_index].numpy(force=True)
+                if atom._atom_name == "O":
+                    if atom.residue_id == end:
+                        new_atoms["O"].append(MissingO(ss=atom.ss, id=atom.id, atom_name=atom._atom_name, residue=atom.residue, chain_name=atom.chain_name, residue_id=atom.residue_id, coordinates=atom.coordinates))
+                        continue
+                    ca = fragment[vec_index-2].numpy(force=True)
+                    c = fragment[vec_index-1].numpy(force=True)
+                    n = fragment[vec_index+1].numpy(force=True)
+                    ca_c = c - ca
+                    ca_c /= np.linalg.norm(ca_c)
+                    n_c = c - n
+                    n_c /= np.linalg.norm(n_c)
+                    bisector = ca_c + n_c
+                    bisector /= np.linalg.norm(bisector)
+                    coordinates = c + bisector*1.23
+                else:
+                    coordinates = fragment[vec_index].numpy(force=True)
                 new_atom = Atom(ss=atom.ss, id=atom.id, atom_name=atom._atom_name, residue=atom.residue, chain_name=atom.chain_name, residue_id=atom.residue_id, coordinates=coordinates)
                 new_atoms[atom._atom_name].append(new_atom)
             else:
                 new_atoms[atom._atom_name].append(atom)
 
-        structure = Structure(atoms=(new_atoms["CA"], new_atoms["C"], new_atoms["N"]))
+        structure = Structure(atoms=(new_atoms["CA"], new_atoms["C"], new_atoms["N"], new_atoms["O"]), missing_o_index=end-1)
         new_structures.append(structure)
 
 
