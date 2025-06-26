@@ -1,5 +1,7 @@
 ## Basic usage
 
+Pretrained models are available at https://huggingface.co/PiotrKupidura/Licencjat
+
 ### Config file
 
 The config.json file should contain following entries
