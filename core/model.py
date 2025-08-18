@@ -1,6 +1,7 @@
 import json
 import math
 from typing import *
+import os
 
 import torch
 from torch import nn
@@ -200,6 +201,8 @@ class CVAE(pl.LightningModule):
         ax.set_ylabel("psi")
         ax.set_xlim(-math.pi, math.pi)
         ax.set_ylim(-math.pi, math.pi)
+        if not os.path.exists("plots"):
+            os.makedirs("plots")
         fig.savefig(f'plots/plot_phi_psi_{self.current_epoch}.png')
         plt.close(fig)
 
@@ -210,6 +213,8 @@ class CVAE(pl.LightningModule):
         return torch.optim.Adam([{'params': self.encoder.parameters()}, {'params': self.decoder.parameters()},], lr=self.lr)
 
     def on_train_epoch_end(self):
+        if not os.path.exists("models"):
+            os.makedirs("models")
         torch.save(self.state_dict(), f"models/model_{self.current_epoch}.pt")
         return super().on_train_epoch_end()
 
@@ -266,6 +271,8 @@ class Trainer():
 
     def train(self):
         self.trainer.fit(self.model, self.training_inputs, self.test_inputs)
+        if not os.path.exists("models"):
+            os.makedirs("models")
         torch.save(self.model.state_dict(), "models/model.pt")
 
     def load_model(self, path):

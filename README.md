@@ -59,10 +59,18 @@ Extracts all fragments containing only one secondary structures to be used for v
 - dir_write - directory where the resulting .npy files should be saved
 #### Validation query
 ```
-python3 validation_query.py -model -n
+python3 validation_query.py -model -n -dir_read
 ```
 Generates a given number of fragments and for each of them computes the distance (RMSD after superposition) to its closer neighbour from PDB.
 ##### Parameters:
 - model - path to the .pt file with the pretrained model
 - dir_read - directory containing the .npy files created by extract_structures.py
+- n - number of fragments to be generated
+#### Bounding ball
+```
+python3 bounding_ball.py -model -n -dir_read
+```
+Comptues the radii of the bounding balls of atoms of a given index across multiple fragments as a measure of their diversity.
+##### Parameters:
+- model - path to the .pt file with the pretrained model
 - n - number of fragments to be generated

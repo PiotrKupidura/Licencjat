@@ -4,7 +4,6 @@ import os
 import argparse
 from core.parser import FileParser
 import tqdm
-from multiprocessing import Pool, cpu_count
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -63,9 +62,8 @@ if __name__ == "__main__":
                 l += 1
                 prev_ss = ss
                 
-    num_workers = cpu_count()
-    with Pool(num_workers) as pool:
-        list(tqdm.tqdm(pool.imap(process_file, files), total=len(files)))
+    for file in tqdm.tqdm(files):
+        process_file(file)
         
     for key, value in helices.items():
         np.save(f"{dir_write}/helix_{key}.npy", value)
