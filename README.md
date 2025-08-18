@@ -68,7 +68,7 @@ Generates a given number of fragments and for each of them computes the distance
 - n - number of fragments to be generated
 #### Bounding ball
 ```
-python3 bounding_ball.py -model -n -dir_read
+python3 bounding_ball.py -model -n
 ```
 Comptues the radii of the bounding balls of atoms of a given index across multiple fragments as a measure of their diversity.
 ##### Parameters:
