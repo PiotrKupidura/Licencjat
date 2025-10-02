@@ -1,8 +1,13 @@
 # Conditional Variational Autoencoder for Protein Sturcture Generation
 
 ## Description
-This repository contains a deep-learing model for generating short fragents of three-dimensional protein structues, which was developed as a part of my bachelors thesis. In order to achieve roto-translational invariance the model operates on internal coordinates of the protein - it generates torsion angles which are then used to reconstruct the Cartesian coordinates. The loss function is then computed over those coordinates so that it is possible to condition the model on the desired fragment orientation (to make the generated fragment fit tightly into the existing structure). The model may also be conditioned on the desired amino acid sequence and secondary structure (helix, sheet or coil). Proposed approach allows to generate fragments with realistic conformations (as demonstrated by the example structures and Ramachandran plots) with the quality of the structures decreasing as their length increases. <img width="772" height="660" alt="image" src="https://github.com/user-attachments/assets/33e39174-9b15-4ebe-b483-b85fc106f880" />
-<img width="435" height="513" alt="image" src="https://github.com/user-attachments/assets/c9af5b4a-6a9c-4f33-bdee-6d3bb968fd65" />
+This repository contains a deep-learing model for generating short fragents of three-dimensional protein structues, which was developed as a part of my bachelors thesis. In order to achieve roto-translational invariance the model operates on internal coordinates of the protein - it generates torsion angles which are then used to reconstruct the Cartesian coordinates. The loss function is then computed over those coordinates so that it is possible to condition the model on the desired fragment orientation (to make the generated fragment fit tightly into the existing structure). The model may also be conditioned on the desired amino acid sequence and secondary structure (helix, sheet or coil). Proposed approach allows to generate fragments with realistic conformations (as demonstrated by the example structures and Ramachandran plots) with the quality of the structures decreasing as their length increases.
+### Example generated fragments for various secondary structures
+<img width="581" height="444" alt="image" src="https://github.com/user-attachments/assets/b0be4ea5-0142-4b24-8b6e-deba9ac6b9ce" />
+
+### Ramachandran plots for various fragment lengths compared to the reference plot
+<img width="570" height="656" alt="image" src="https://github.com/user-attachments/assets/7d0ffe93-09cf-45cb-9000-4c9d4aaf2412" />
+
 
 ## Basic usage
 
